@@ -1,0 +1,4 @@
+admin_ui:
+  image:
+    repository: "admin-ui"
+    tag: ""

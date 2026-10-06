@@ -1,0 +1,112 @@
+---
+# Source: identity-platform/templates/login-ui-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: login-ui
+  labels:
+    helm.sh/chart: identity-platform-1.0.0
+    app.kubernetes.io/name: identity-platform
+    app.kubernetes.io/part-of: identity-platform
+    app.kubernetes.io/instance: identity-platform
+    app.kubernetes.io/version: 1.0.0
+    app.kubernetes.io/managed-by: Helm
+    app: login-ui
+    app.kubernetes.io/component: login-ui
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: identity-platform
+      app.kubernetes.io/part-of: identity-platform
+      app.kubernetes.io/instance: identity-platform
+      app: login-ui
+      app.kubernetes.io/component: login-ui
+  template:
+    metadata:
+      annotations:
+      labels:
+        app.kubernetes.io/name: identity-platform
+        app.kubernetes.io/part-of: identity-platform
+        app.kubernetes.io/instance: identity-platform
+        app: login-ui
+        app.kubernetes.io/component: login-ui
+    spec:
+      serviceAccountName: default
+      securityContext: {}
+      volumes:
+        - name: login-ui-init-scripts
+          configMap:
+            name: login-ui-init-scripts
+            defaultMode: 0755
+        - name: writeable
+          emptyDir: {}
+      initContainers:
+        - name: filesystem-init
+          image: login-ui
+          imagePullPolicy: IfNotPresent
+          volumeMounts:
+            - mountPath: /scripts
+              name: login-ui-init-scripts
+            - mountPath: /writeable
+              name: writeable
+          command:
+            - /scripts/filesystem-init.sh
+      containers:
+        - name: login-ui
+          securityContext: {}
+          image: login-ui
+          imagePullPolicy: IfNotPresent
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - /usr/bin/nginx
+                  - -s
+                  - quit
+          env:
+            - name: SUBFOLDER
+              value: am/XUI
+            - name: ROUTES_FILE
+              value: routes.platform
+          envFrom:
+            - configMapRef:
+                name: platform-config
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          startupProbe:
+            exec:
+              command:
+                - "true"
+            initialDelaySeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 1
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 1
+          resources:
+            limits:
+              memory: 100Mi
+            requests:
+              cpu: 10m
+              memory: 100Mi
+          volumeMounts:
+            - mountPath: /tmp
+              name: writeable
+              subPath: tmp
+            - mountPath: /usr/share/nginx
+              name: writeable
+              subPath: usr/share/nginx
+      tolerations:
+        - effect: NoSchedule
+          key: kubernetes.io/arch
+          operator: Exists

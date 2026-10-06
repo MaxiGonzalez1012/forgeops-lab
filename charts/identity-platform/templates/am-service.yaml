@@ -1,0 +1,27 @@
+{{- if .Values.am.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: am
+  annotations:
+    {{- with .Values.platform.service.annotations }}
+      {{- toYaml . | nindent 4 }}
+    {{- end }}
+  labels:
+    {{- include "identity-platform.labels" . | nindent 4 }}
+    {{- with .Values.am.podLabels }}
+      {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  type: {{ .Values.am.service.type }}
+  ports:
+    - port: {{ .Values.am.service.port }}
+      targetPort: https
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "identity-platform.selectorLabels" . | nindent 4 }}
+    {{- with .Values.am.podLabels }}
+      {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}

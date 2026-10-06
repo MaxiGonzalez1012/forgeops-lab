@@ -1,0 +1,386 @@
+#!/usr/bin/env python3
+"""Manage images in a ForgeOps deployment"""
+
+import argparse
+from copy import copy
+from copy import deepcopy
+import datetime
+import os
+import json
+from pathlib import Path
+import sys
+import site
+import textwrap
+
+file_name = Path(__file__)
+current_file_path = file_name.parent.resolve()
+root_path = [parent_path for parent_path in current_file_path.parents if (parent_path / 'README.md').exists()][0]
+dependencies_dir = os.path.join(root_path, 'lib', 'dependencies')
+# Insert lib folders to python path
+sys.path.insert(0, str(root_path))
+sys.path.insert(1, str(dependencies_dir) + site.USER_SITE.replace(site.USER_BASE, ''))
+
+from lib.python.ensure_configuration_is_valid_or_exit import print_how_to_install_dependencies
+try:
+    import yaml
+    from mergedeep import merge
+    from packaging.version import Version
+except:
+    print_how_to_install_dependencies()
+import lib.python.utils as utils
+from lib.python.releases import (
+    ALT_RELEASES,
+    BASE_REPO_DEF,
+    BASE_REPO_DEV,
+    DEPLOY_REPO_DEF,
+    BASE_IMAGE_NAMES,
+    RELEASES_SRC_DEF,
+    get_releases,
+    parse_release_str,
+    select_tag,
+    set_image,
+    select_image_repo
+)
+
+
+PROG = 'forgeops image'
+COMPONENTS_APPS = ['am', 'amster', 'am-config-upgrader', 'idm']
+COMPONENTS_UI = ['admin-ui', 'end-user-ui', 'login-ui', 'idm-admin-ui']
+COMPONENTS_PLATFORM = sum([COMPONENTS_APPS, ['ds'], COMPONENTS_UI], [])
+COMPONENTS_META = ['platform', 'apps', 'ui']
+COMPONENTS_VALID = sum([COMPONENTS_META, COMPONENTS_PLATFORM, ['ig']], [])
+# argparse checks `choices` against the empty default of the nargs='*'
+# positional, so [] must be an allowed value for --copy with no components
+COMPONENTS_VALID.append([])
+
+# Avoid using anchors/aliases in outputted YAML
+# Notice we call this with yaml.dump, but we are still using safe_dump
+# From https://ttl255.com/yaml-anchors-and-aliases-and-how-to-disable-them/
+class NoAliasDumper(yaml.SafeDumper):
+    def ignore_aliases(self, data):
+        return True
+
+
+# Setup a custom argparse formatter so we can use multiple formatters
+class Formatter(argparse.ArgumentDefaultsHelpFormatter, argparse.RawDescriptionHelpFormatter):
+    pass
+
+
+def writeYamlFile(data, file):
+    """Write an object to a yaml file"""
+    with open(file, 'w') as f:
+        yaml.dump(data, f, sort_keys=False, Dumper=NoAliasDumper)
+
+
+def containsElement(search, target):
+    """Check to see if search list contains at least one element from target list"""
+    if any(c in target for c in search):
+        return True
+    return False
+
+
+def write_release_names(tags, repo, build_path, release_name, image_names):
+    """ Write a release files """
+
+    for c in tags.keys():
+        # Skip ui images as we don't support building those
+        if 'ui' in c:
+            continue
+        releases_path = build_path / c / 'releases'
+        os.makedirs(releases_path, exist_ok=True)
+
+        image_name = image_names[c]
+        release_path = releases_path / release_name
+        content = f"REPO={repo}/{image_name}\nTAG={tags[c]}"
+        with open(release_path, 'w') as f:
+            f.write(f"{content}\n")
+
+
+def update_image_defaulter(images, overlay_path):
+    """ Update the image-defaulter """
+
+    for image_name in images.keys():
+        image = f"{images[image_name]['image']['repository']}"
+        if 'tag' in images[image_name]['image'].keys():
+            image = f"{image}:{images[image_name]['image']['tag']}"
+        cmd_args = f"edit set image '{image_name}={image}'"
+        utils.run('kustomize', cmd_args, cwd=f"{overlay_path}/image-defaulter")
+
+
+def setup_args():
+    """ Setup argparse args """
+    help_epilog=f"""
+--image-repo shorthand repos and their defaults:
+base = {BASE_REPO_DEF}
+deploy = {DEPLOY_REPO_DEF}
+dev = {BASE_REPO_DEV}
+
+examples:
+# Set a custom component image in the prod env for am (used by build command)
+{PROG} --env-name prod --image-repo my-container-repo/idp --tag 7.5.0 am
+
+# Copy images from one env to another (prod-single to prod)
+{PROG} --env-name prod --source prod-single --copy
+
+### Manage release files for use with `forgeops build --release-name $RELEASE_NAME`
+# Manage release files for the entire platform (generated release name is 7.5.1-DATETIME)
+{PROG} --release 7.5.1 platform
+
+# Manage release files with a custom release name for the entire platform
+{PROG} --release 7.5.1 --release-name 7.5.1-2 platform
+
+# Manage an official PingGateway release with a custom release name
+{PROG} --release 2024.6.3 --release-name 2024.6.3-1 ig
+
+### Update Helm values.yaml and Kustomize overlay to use deployable images
+### Needed for demos and initial setup
+# Select an official release for an env for platform components
+{PROG} --release 7.5.1 --env-name ig-sfo1 platform
+
+# Select an official PingGateway release for an env
+{PROG} --release 7.5.1 --env-name ig-dfw1 ig
+"""
+
+    parser = argparse.ArgumentParser(description='Manage images in a Ping Identity Platform (PIP) environment',
+                                     prog=PROG,
+                                     epilog=textwrap.dedent(help_epilog),
+                                     formatter_class=Formatter)
+    parser.add_argument('-d', '--debug', action='store_true', help='Turn on debugging')
+    parser.add_argument('components', nargs='*', choices=COMPONENTS_VALID)
+    parser.add_argument('-k', '--kustomize-path', default=argparse.SUPPRESS,
+                        help='Kustomize dir to use [absolute or relative to forgeops root] (default: kustomize)')
+    parser.add_argument('-b', '--build-path', default=argparse.SUPPRESS,
+                        help='Docker dir to use [absolute or relative to forgeops root] (default: docker)')
+    parser.add_argument('-H', '--helm-path', default=argparse.SUPPRESS,
+                        help='Dir to store Helm values files [absolute or relative to forgeops root] (default: helm)')
+    parser.add_argument('-e', '--env-name', help='Name of environment to manage')
+    parser.add_argument('-s', '--source', help='Name of source environment')
+    parser.add_argument('-t', '--tag', help='Set the tag used for images')
+    parser.add_argument('--no-helm', action='store_true', help="Don't manage Helm values files")
+    parser.add_argument('--no-kustomize', action='store_true', help="Don't manage Kustomize overlay")
+    parser.add_argument('--copy', action='store_true', help='Copy images from --source to --env-name')
+    parser.add_argument('--custom', action='store_true', help='Append -custom to component name when setting custom images')
+    parser.add_argument('--release', help='Specify platform image release to set (eg. 7.5.1)')
+    parser.add_argument('--release-name', default=argparse.SUPPRESS, help='Name of release file in docker/component/releases (default: $RELEASE-$DATETIME in UTC)')
+    parser.add_argument('--releases-src', default=argparse.SUPPRESS, help=f"URL or path where release files live (default: {RELEASES_SRC_DEF})")
+    parser.add_argument('-r', '--image-repo', default=argparse.SUPPRESS, help=f"Container registry URL to use (defaults: see below)")
+    parser.add_argument('--skip-image-append', action='store_true', help="Don't append image name to repo")
+    # Needed to be called from bin/forgeops, but ignored
+    parser.add_argument('--dryrun', action='store_true', help=argparse.SUPPRESS)
+    parser.add_argument('--verbose', action='store_true', help=argparse.SUPPRESS)
+
+    return parser.parse_args()
+
+
+def run(args, config):
+    """ Run logic for image """
+    if args.debug:
+        print(args)
+
+    if args.copy and args.release:
+        utils.exit_msg('You can only provide --copy or --release, not both.')
+
+    if args.copy and not args.source:
+        utils.exit_msg('You must supply a source (-s) when using --copy.')
+
+    if not args.copy and not args.components:
+        utils.exit_msg('You must supply at least one component to update when not using --copy.')
+
+    if getattr(args, 'image_repo', None) and not args.copy and not args.release and not args.env_name:
+        utils.exit_msg('You must supply --env-name when not doing a copy or a release')
+
+    if getattr(args, 'release_name', None) and not args.release:
+        utils.exit_msg('You must supply --release when using --release-name.')
+
+    if args.custom and (getattr(args, 'release', None) or getattr(args, 'copy', None)):
+        utils.exit_msg('You cannot supply --custom with --release or --copy')
+
+    if args.skip_image_append:
+        if 'platform' in args.components or len(args.components) > 1:
+            utils.exit_msg('You can only set the image for one component when using --skip-image-append')
+
+    build_path = config['build_path']
+    helm_root = config['helm_path']
+    helm_path = helm_root / args.env_name if args.env_name else None
+    kustomize_path = config['kustomize_path']
+    releases_src = config['releases_src']
+
+    components = copy(args.components)
+    if containsElement(['platform'], components):
+        components.extend(COMPONENTS_PLATFORM)
+        components.remove('platform')
+    if containsElement(['apps'], components):
+        components.extend(COMPONENTS_APPS)
+        components.remove('apps')
+    if containsElement(['ui'], components):
+        components.extend(COMPONENTS_UI)
+        components.remove('ui')
+    # Use set() to remove duplicates from components
+    components = list(set(components))
+
+    if args.debug:
+        print(f"components = {components}")
+
+    if 'idm-admin-ui' in components and args.release and args.release not in ALT_RELEASES:
+        if Version(args.release) < Version('8.1.0'):
+            components.remove('idm-admin-ui')
+
+    repo = select_image_repo(args.release, getattr(args, 'image_repo', None),
+                                 getattr(args, 'env_name', None))
+
+    update_config_images = True
+    update_docker_files = False
+    if (args.release and not args.env_name) or args.copy:
+        update_config_images = False
+        if args.release:
+            update_docker_files = True
+
+    image_names = copy(BASE_IMAGE_NAMES)
+    releases = {}
+    release = {}
+    release_tags = {}
+    timestamp = None
+    if args.release:
+        timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d_%H%M%S")
+        release_name = f"{args.release}-{timestamp}"
+        if getattr(args, 'release_name', None):
+            release_name = args.release_name
+        if args.release == 'dev':
+            repo = BASE_REPO_DEV
+
+        releases = get_releases(releases_src, components)
+        release = parse_release_str(args.release)
+        for c in components:
+            release_tags[c], image_names = select_tag(c, releases, release, image_names, tag=args.tag, debug=args.debug)
+
+        if update_docker_files:
+            print(f"Updating release file(s) for docker builds [{release_name}]")
+            utils.check_path(build_path, 'Build path', 'dir')
+            write_release_names(release_tags, repo, build_path, release_name, image_names)
+
+    values_images = {}
+    images_kustomize = {}
+    if update_config_images:
+        tag = args.tag
+        for component in components:
+            if args.release:
+                tag = 'dev' if args.release == 'dev' else release_tags[component]
+            if component == 'ds':
+                data = set_image(image_names[component], tag, repo, args.skip_image_append)
+                values_images['ds_cts'] = data
+                values_images['ds_idrepo'] = data
+                images_kustomize[component] = data
+            else:
+                c = component
+                if args.custom:
+                    c = f"{component}-custom"
+                data = set_image(image_names[c], tag, repo, args.skip_image_append)
+                values_images[c.replace('-', '_')] = data
+                images_kustomize[c] = data
+
+    if config['do_kustomize']:
+        utils.check_path(kustomize_path, 'Kustomize path', 'dir')
+        overlay_root = kustomize_path / 'overlay'
+        utils.check_path(overlay_root, 'Overlay root', 'dir')
+        overlay_path = overlay_root / args.env_name if args.env_name else overlay_root
+        utils.check_path(overlay_path, 'Overlay path', 'dir')
+        if args.debug:
+            print(f"overlay_path={overlay_path}")
+
+        if args.copy:
+            source_path = None
+            if Path(args.source).is_absolute():
+                source_path = Path(args.source)
+            else:
+                source_path = overlay_root / args.source
+            if args.debug:
+                print(f"source_path={source_path}")
+
+            src_overlay_path = overlay_root / args.source
+            if args.debug:
+                print(f"src_overlay_path={src_overlay_path}")
+
+            img_def_fn = 'image-defaulter/kustomization.yaml'
+            if not overlay_path.exists():
+                utils.exit_msg(f'{overlay_path} does not exist. Run forgeops env to create it.')
+            if not src_overlay_path.exists():
+                utils.exit_msg(f'{src_overlay_path} does not exist. Run forgeops env to create it.')
+            img_kust = overlay_path / img_def_fn
+            src_img_kust = src_overlay_path / img_def_fn
+            img_kust.write_bytes(src_img_kust.read_bytes())
+
+        if update_config_images:
+            print(f"Updating image-defaulter in {args.env_name} overlay")
+            update_image_defaulter(images_kustomize, overlay_path)
+
+    if config['do_helm'] and args.env_name:
+        utils.check_path(helm_path, 'Helm path', 'dir')
+        values_fn = 'values.yaml'
+        values_file = helm_path / values_fn
+
+        if values_file.is_file():
+            print('Updating existing helm values.')
+        else:
+            utils.exit_msg(f'Helm environment ({args.env_name}) not populated. Run forgeops env to populate.')
+
+        values = {}
+        with open(values_file, 'r', encoding='utf-8') as f:
+            values = yaml.safe_load(f)
+
+        if args.copy:
+            src_helm_path = helm_root / args.source
+            if args.debug:
+                print(f"src_helm_path={src_helm_path}")
+
+            src_values_file = src_helm_path / values_fn
+            if src_values_file.is_file():
+                print(f"Reading in values from {src_values_file}")
+            else:
+                utils.exit_msg(f'Source environment ({src_helm_path}) not populated. Run forgeops env to populate.')
+
+            src_images = {}
+            src_values = {}
+            with open(src_values_file, encoding='utf-8') as f:
+                src_values = yaml.safe_load(f)
+            for k in src_values.keys():
+                if 'image' in src_values[k].keys():
+                    src_images[k] = { 'image': src_values[k]['image'] }
+            merge(values_images, src_images)
+
+        merge(values, values_images)
+        writeYamlFile(values, values_file)
+
+    ###
+    ### Logs
+    ###
+    timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H:%M:%S%z")
+    cmd_ary = copy(sys.argv)
+    cmd_ary[0] = PROG
+    cmd = ' '.join(cmd_ary)
+    log_action = 'Update'
+    log_file = 'env.log'
+    log_line = f"{timestamp} {log_action} {cmd}"
+    if config['do_kustomize'] and args.copy:
+        log_path_overlay = overlay_path / log_file
+        with open(log_path_overlay, 'a', encoding='utf-8') as log_overlay_f:
+            log_overlay_f.write(f"{log_line}\n")
+    if config['do_helm'] and args.env_name:
+        log_path_helm = helm_path / log_file
+        with open(log_path_helm, 'a', encoding='utf-8') as log_helm_f:
+            log_helm_f.write(f"{log_line}\n")
+
+
+if __name__ == '__main__':
+    args = setup_args()
+    overrides = utils.process_overrides(root_path,
+                                        getattr(args, 'helm_path', None),
+                                        getattr(args, 'kustomize_path', None),
+                                        getattr(args, 'build_path', None),
+                                        getattr(args, 'no_helm', False),
+                                        getattr(args, 'no_kustomize', False),
+                                        getattr(args, 'releases_src', None),
+                                        getattr(args, 'pull_policy', None),
+                                        getattr(args, 'source', None),
+                                        getattr(args, 'ssl_secretname', None),
+                                        debug=args.debug)
+    run(args, overrides)

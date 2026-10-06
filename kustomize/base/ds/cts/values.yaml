@@ -1,0 +1,3 @@
+ds_cts:
+  image:
+    repository: "ds"

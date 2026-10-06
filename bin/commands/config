@@ -1,0 +1,581 @@
+#!/usr/bin/env python3
+""" Manage file based configuration for Ping Identity Platform"""
+import argparse
+import pathlib
+import subprocess
+import shutil
+import io
+import sys
+import tarfile
+import textwrap
+import os
+from pathlib import Path
+import site
+
+file_name = Path(__file__)
+current_file_path = file_name.parent.resolve()
+root_path = [parent_path for parent_path in current_file_path.parents if (parent_path / 'README.md').exists()][0]
+dependencies_dir = os.path.join(root_path, 'lib', 'dependencies')
+# Insert lib folders to python path
+sys.path.insert(0, str(root_path))
+sys.path.insert(1, str(dependencies_dir) + site.USER_SITE.replace(site.USER_BASE, ''))
+
+from lib.python import utils, common
+
+HELP_DESCRIPTION = "Manage Ping Identity Platform configuration."
+HELP_BUILD_CMD_DESCRIPTION = "Build a custom image. PingAM, PingIDM, and PingGateway only."
+HELP_EXPORT_CMD_DESCRIPTION = "Export config from running instance to a given profile. PingAM and PingIDM only."
+HELP_EXPORT_BASELINE_PROFILE = """
+Specify a base profile to start with if the target profile doesn't
+ exist. (default: default)
+"""
+HELP_CMD_COMPONENTS = "Ping Identity Platform component."
+HELP_EXPORT_CMD_SORT = """
+Sort configuration json alphanumerically. This will lead to a large initial
+ diff but subsequent iterations should be smaller and more readable.
+"""
+HELP_EXPORT_CMD_AM_NO_UPGRADE = "Do not run PingAM upgrader rules when exporting configuration."
+HELP_EXPORT_AM_UPG_RULES = "Directory of rules to pass to upgrade-am-config"
+HELP_PATH_CMD_TOOL_NAME = "Directory of tool configuration files e.g. docker, kustomize"
+HELP_PATH_CMD_DESCRIPTION = "Resolve an absolute path to a location in the forgeops directory tree."
+
+HELP_NAMESPACE = "Kubernetes namespace to target"
+
+HELP_ENV_NAME = "ForgeOps environment to use or modify."
+HELP_CONFIG_PROFILE = "Config profile to copy into image."
+HELP_BUILD_DOCKER_ARGS = "Extra arguments to pass to docker. Use -- after config build arguments to specify."
+HELP_BUILD_PUSH_TO = "Container registry to push built images to."
+HELP_BUILD_TAG = "Tag to use on custom image."
+HELP_BUILD_SKIP_IMG_APP = "Don't append image to the repo"
+
+HELP_PATH_DOCKER_CMD = """
+Resolve the path to a directory which contains a Dockerfile, optionally resolve
+ the path for a config profile used in a Dockerfile.
+"""
+HELP_PATH_DOCKER_PROFILE_NAME = "Add the config profile name to the path."
+HELP_BUILD_PATH = "Docker build path to use [absolute or relative to forgeops root] (default: docker)"
+HELP_DRYRUN = "Do a dry run."
+
+HELP_HELM_PATH = "Dir to store Helm values files [absolute or relative to forgeops root] (default: helm)"
+HELP_PATH_HELM_ENV_NAME = "Environment name to get path to"
+
+HELP_PATH_KUSTOMIZE_CMD = """
+Resolve the path to a directory which contains kustomization
+ directories that hold many manifests. Optionally resolve to profile. e.g.
+ small.
+"""
+HELP_KUSTOMIZE_PATH = "Kustomize dir to use [absolute or relative to forgeops root] (default: kustomize)"
+
+HELP_RELEASE_NAME = "Name of release to pass to upgrade-am-config"
+
+HELP_PATH_KUSTOMIZE_LAYER = """
+The parent directory containing multiple kustomize profile directories.
+  e.g. base or overlay
+"""
+
+HELP_PATH_KUSTOMIZE_PROFILE = """
+Directory which contians a kustomization.yaml. e.g. small,medium,large
+"""
+
+HELP_PATH_KUSTOMIZE_SUBPROFILE = """
+Directory which contians a kustomization.yaml, this is used for variant images
+like PingDS which has multiple kustomizations. e.g cts,idrepo,base
+""".strip()
+
+HELP_PATH_EXAMPLES = """
+examples:
+  # Path to the "small" kustomize profile
+  $ ./bin/forgeops config path kustomize overlay small
+
+  # Path to a PingIDM configuration profile
+  $ ./bin/forgeops config path docker idm
+
+  # Path to the directory containing PingGateway Dockerfile
+  $ ./bin/forgeops config path docker ig
+"""
+
+HELP_BUILD_EXAMPLES = """
+examples:
+  # Build an am-custom image
+  $ ./bin/forgeops config build --env-name prod --config-profile prod --push-to my_image_repo am
+
+  # Build an idm-custom image passing extra flags to docker build
+  $ ./bin/forgeops config build --env-name prod --config-profile prod --push-to my_image_repo idm -- --platform linux/amd64,linux/arm64
+
+  # Use an AWS ECR image repository
+  ECR_URL=1234567890.dkr.ecr.us-east-1.amazonaws.com
+  $ ./bin/forgeops config build --env-name prod --config-profile prod --push-to $ECR_URL/prod-idm-custom --skip-image-append idm 
+"""
+
+HELP_EXPORT_EXAMPLES = """
+examples:
+  # Export Ping configuration to an existing profile <myprofile>
+  $ ./bin/forgeops config export idm <myprofile>
+
+  # Export Ping configruation for a profile that doesn't exist
+  $ ./bin/forgeops config export --baseline-profile default idm <mynewprofile>
+
+  # Export PingAM configuration using a ForgeOps env name to get an image version
+  # Recommended
+  $ ./bin/forgeops config export --env-name my-env am <myprofile>
+
+  # Export PingAM configuration using a release file to specify the am-config-upgrader
+  # Deprecated
+  $ ./bin/forgeops config export --release-name my-release am <myprofile>
+"""
+
+PLATFORM_COMPONENTS = {
+    'am': ('am',),
+    'amster': ('amster',),
+    'idm': ('idm',),
+    'ig': ('ig',),
+    'ds': ('ds',),
+}
+
+EXPORT_COMPONENTS = {
+    'am': ('am',),
+    'idm': ('idm',),
+}
+
+BUILD_COMPONENTS = {
+    'am': ('am',),
+    'idm': ('idm',),
+}
+
+APP_CONF_PATH_FMT = {
+    'am': 'am/config-profiles/{profile}'.format,
+    'idm': 'idm/config-profiles/{profile}/conf'.format,
+    'idm-ui': 'idm/config-profiles/{profile}/ui/admin/default/config'.format,
+    'ig': 'ig/config-profiles/{profile}/config'.format,
+    'amster': 'amster/config-profiles/{profile}/config'.format,
+}
+
+KUBECTL = shutil.which('kubectl')
+FORGEOPS_BIN = utils.SCRIPT_DIR.joinpath('forgeops').resolve()
+AMSTER_BIN = f"{FORGEOPS_BIN} amster"
+AM_UPGRADER = f"{FORGEOPS_BIN} upgrade-am-config"
+RULES_PATH = root_path / 'etc' / 'am-upgrader-rules'
+
+def profile_path(path):
+    """Make sure there's a profile directory"""
+    if path.is_dir():
+        log.info(f'Updating existing profile: {path}')
+    else:
+        log.info(f'Creating a new profile: {path}')
+        path.mkdir(parents=True)
+
+
+def clean_path(path, dryrun=False):
+    """Clean profile directory"""
+    log.info(f'Clean profile: {path}')
+    if dryrun:
+        print(f"rm -rf {path}")
+    else:
+        shutil.rmtree(path)
+
+
+def _get_profile_path(component, profile_name, build_path):
+    return pathlib.Path(build_path.joinpath(
+        APP_CONF_PATH_FMT[component](profile=profile_name))).resolve()
+
+
+def export_amster(conf, dryrun=False):
+    profile_path(conf)
+    try:
+        if dryrun:
+            print(f"{AMSTER_BIN} export {conf}")
+        else:
+            utils.run(AMSTER_BIN, f'export {conf}')
+    except utils.RunError as e:
+        log.error(f'{e.cmd} had the following error: \n {e.stderr}')
+        raise Exception('Couldn\'t run amster export')
+
+
+def export_idm(idm_conf, idm_ui_conf, pod_name, dryrun=False):
+    """Export PingIDM config"""
+    profile_path(idm_conf)
+    profile_path(idm_ui_conf)
+    idm_ui_conf_file = idm_ui_conf.joinpath("AppConfiguration.js")
+    # Copy from the PingIDM container to a local path
+    cp_args = f"""
+    cp -c openidm
+        {pod_name}:/opt/openidm/conf {idm_conf}
+    """.strip()
+
+    cp_args_ui = f"""
+    cp -c openidm
+        {pod_name}:/opt/openidm/ui/admin/default/config/AppConfiguration.js {idm_ui_conf_file}
+    """.strip()
+    try:
+        utils.run(KUBECTL, cp_args, dryrun=dryrun)
+        utils.run(KUBECTL, cp_args_ui, dryrun=dryrun)
+    except utils.RunError as e:
+        log.error(f'{e.cmd} had the following error: \n {e.stderr}')
+
+
+def export_am(am_conf, pod_name, dryrun=False):
+    profile_path(am_conf)
+
+    # Copy from the am container to a local path
+    exec_args = f"""
+        exec {pod_name} -- /home/forgerock/export.sh -
+    """.strip()
+    try:
+        log.debug('Starting export')
+        _, out, _ = utils.run(KUBECTL, exec_args, cstdout=True, cstderr=True, dryrun=dryrun)
+        if out == b'':
+            raise Exception('No configuration changes found.')
+        else:
+            clean_path(am_conf, dryrun=dryrun)
+        f = io.BytesIO(out)
+        with tarfile.open(fileobj=f) as tarball:
+            log.debug('Starting to extract tarball')
+            tarball.extractall(am_conf)
+            log.debug('Export Completed.')
+        log.info('Exported PingAM config')
+
+    except utils.RunError as e:
+        log.error(f'{e.cmd} had the following error: \n {e.stderr}')
+        raise e
+    except tarfile.ExtractError as e:
+        log.error(f'Couldn\'t extract tarball')
+        raise e
+
+
+def upgrade_am(am_conf, env_name=None, release_name=None, rules=RULES_PATH, dryrun=False):
+    """
+    Run PingAM configuration through the PingAM control
+    Notes:
+      * You must run am-config-upgrader twice
+        * am-config-upgrader only runs one set of rules at a time
+    """
+
+    log.info('Running PingAM static config through the am-config-upgrader to upgrade to the current version of forgeops.')
+    try:
+        opts = str(am_conf)
+        if env_name:
+            opts = f"--env-name {env_name} {opts}"
+        elif release_name:
+            opts = f"--release-name {release_name} {opts}"
+        utils.run(AM_UPGRADER, opts, dryrun=dryrun)
+    except utils.RunError as e:
+        log.error(f'Error during upgrade {e.stderr}')
+        sys.exit(1)
+
+    log.info('Completed upgrading PingAM configuration')
+
+    log.info('Running PingAM static config through the am-config-upgrader to replace any missing default placeholders.')
+    try:
+        utils.run(AM_UPGRADER, opts, str(rules), dryrun=dryrun)
+    except utils.RunError as e:
+        log.error(f'Error during placeholder replacement {e.stderr}')
+        sys.exit(1)
+
+    log.info('Completed replacing PingAM placeholders')
+
+
+def export_ig(ig_conf, pod_name, dryrun=False):
+    """Export PingGateway config"""
+    profile_path(ig_conf)
+
+    # Get IG_INSTANCE_DIR environment variable from the container to know where the config is located
+    dir_env_var = f"""
+    exec {pod_name} -- bash -c 'echo $IG_INSTANCE_DIR'
+    """.strip()
+    _, out, _ = utils.run(KUBECTL, dir_env_var,
+                                  cstdout=True, cstderr=True)
+
+    ig_instance_dir = out.decode().strip()
+
+    # Copy from the PingGateway container to a local path
+    cp_args = f"""
+    cp -c ig {pod_name}:{ig_instance_dir}/config {ig_conf}
+    """.strip()
+    try:
+        utils.run(KUBECTL, cp_args, dryrun=dryrun)
+    except utils.RunError as e:
+        log.error(f'{e.cmd} had the following error: \n {e.stderr}')
+        raise e
+
+def run_export(args, overrides):
+    # Amster doesn't use a running instance
+    conf_path = pathlib.Path(overrides['build_path'].joinpath(
+        APP_CONF_PATH_FMT[args.component](profile=args.config_profile))).resolve()
+    # prime the config
+    if not conf_path.exists():
+        if args.component == 'ig':
+            log.debug('Given ig as a component, doing a copy from the baseline profile.')
+            baseline_profile = pathlib.Path(overrides['build_path'].joinpath(
+              APP_CONF_PATH_FMT[args.component](profile=args.baseline_profile))).resolve()
+            shutil.copytree(baseline_profile, conf_path)
+        else:
+            if args.dryrun:
+                print(f"mkdir -p {conf_path}")
+            else:
+                log.debug(f'Doing a mkdir for {conf_path}')
+                conf_path.mkdir(0o755, True, True) # mode, parents, exist_ok
+    if args.component == 'amster':
+        log.info('Exporting amster config.')
+        export_amster(conf_path, dryrun=args.dryrun)
+    # Configs from running containers
+    else:
+        jsonpath_expr = """
+        {range .items[*]}{.metadata.labels.app}{' '}{.metadata.name}{'\\n'}{end}
+        """.strip()
+        pod_name_args = f"""
+        get -l "app={args.component}" -o jsonpath="{jsonpath_expr}" --field-selector=status.phase==Running pod
+        """.strip()
+        try:
+            _, out, _ = utils.run(KUBECTL, pod_name_args,
+                                  cstdout=True, cstderr=True)
+            log.debug('Gathered pod names.')
+        except subprocess.CalledProcessError as e:
+            log.error(f'{e.cmd} had the following error: \n {e.stderr}')
+            sys.exit(1)
+
+        # PingIDM, PingAM, PingGateway export types
+        try:
+            component_name, pod_name = out.splitlines()[0].decode().split(' ')
+            log.info(f'Running export for {component_name} in {pod_name}')
+            if component_name == 'idm':
+                conf_ui_path = pathlib.Path(overrides['build_path'].joinpath(
+                    APP_CONF_PATH_FMT["idm-ui"](profile=args.config_profile))).resolve()
+                export_idm(conf_path, conf_ui_path, pod_name, dryrun=args.dryrun)
+            elif component_name == 'ig':
+                export_ig(conf_path, pod_name, dryrun=args.dryrun)
+            elif component_name == 'am':
+                export_am(conf_path, pod_name, dryrun=args.dryrun)
+                if args.am_export_no_upgrade:
+                    log.debug('Skip PingAM upgrader rules')
+                else:
+                    if args.env_name:
+                        upgrade_am(conf_path,
+                                   env_name=args.env_name,
+                                   rules=args.am_upgrader_rules,
+                                   dryrun=args.dryrun)
+                    elif args.release_name:
+                        upgrade_am(conf_path,
+                                   release_name=args.release_name,
+                                   rules=args.am_upgrader_rules,
+                                   dryrun=args.dryrun)
+                    else:
+                        upgrade_am(conf_path,
+                                   rules=args.am_upgrader_rules,
+                                   dryrun=args.dryrun)
+            log.info('Completed export')
+        except IndexError:
+            log.error('Unable to find running components.')
+            sys.exit(1)
+        except Exception as e:
+            log.error(e)
+            sys.exit(1)
+
+    if args.sort:
+        log.info('Sorting configuration.')
+        utils.sort_dir_json(conf_path)
+        log.info('Sorting completed.')
+
+
+def run_build(args, overrides):
+    """ Build an custom container and use the image command to set it in a ForgeOps environment"""
+
+    conf_path = _get_profile_path(args.component, args.config_profile, overrides['build_path'])
+    app_path = pathlib.Path(overrides['build_path'].joinpath(args.component)).resolve()
+    if not conf_path.is_dir():
+        msg = f"ERROR! No such profile ({args.config_profile}) at {conf_path}"
+        utils.exit_msg(1, msg)
+    build_args = f" --build-arg CONFIG_PROFILE={args.config_profile}"
+    image = f"{args.component}-custom"
+    repo = getattr(args, 'push_to')
+    if not repo:
+        repo = 'none'
+    if repo == 'none' and os.getenv('PUSH_TO'):
+        repo = os.getenv('PUSH_TO')
+    if repo != 'none':
+        if args.skip_image_append:
+            image = repo
+        else:
+            image = f"{repo}/{image}"
+    image = f"{image}:{args.tag}"
+    docker_extra_args = ' '.join(getattr(args, 'docker_args', ''))
+    if docker_extra_args == '' and os.getenv('DOCKER_BUILD_EXTRA_ARGS'):
+        docker_extra_args = os.getenv('DOCKER_BUILD_EXTRA_ARGS', '')
+    docker_build_args = f"build {build_args} {docker_extra_args} -t {image} -f {app_path}/Dockerfile-custom {app_path}"
+    docker_push_args = f"push {image}"
+    docker_cmd = os.getenv('CONTAINER_ENGINE', 'docker')
+    utils.run(docker_cmd, docker_build_args, dryrun=args.dryrun)
+    if repo != 'none' and '/' in image:
+        utils.run(docker_cmd, docker_push_args, dryrun=args.dryrun)
+    forgeops_cmd = f"{root_path}/bin/forgeops"
+    skip_img_app_opt=''
+    if args.skip_image_append:
+        skip_img_app_opt = '--skip-image-append'
+    image_args = ' '.join([
+        f"image -e {args.env_name} --custom",
+        f"-k {overrides['kustomize_path']}",
+        f"-H {overrides['helm_path']}",
+        f"-b {overrides['build_path']}",
+        f"--image-repo {repo} --tag {args.tag}",
+        skip_img_app_opt,
+        args.component
+    ])
+    utils.run(forgeops_cmd, image_args, dryrun=args.dryrun)
+
+
+def run_path(args, overrides):
+    if args.tool == 'docker' and args.component != 'ds':
+        profile = f'config-profiles/{args.config_profile}' if args.config_profile != '' else ''
+        print(overrides['build_path'].joinpath(args.component, profile))
+    elif args.tool == 'docker' and args.component == 'ds':
+        profile = args.config_profile if args.config_profile != '' else ''
+        print(overrides['build_path'].joinpath(args.component, profile))
+    elif args.tool == 'kustomize':
+        print(overrides['kustomize_path'].joinpath(args.layer, args.kustomization, args.sub_kustomization))
+    elif args.tool == 'helm':
+        print(overrides['helm_path'].joinpath(args.env_name))
+
+
+def setup_args(common_args):
+    """ Setup argparse """
+    parser = argparse.ArgumentParser(description=HELP_DESCRIPTION)
+    utils.add_loglevel_arg(parser)
+    sub_cmd_parser = parser.add_subparsers(dest="cmd")
+
+    # export sub command
+    export_cmd_parents = [common_args['debug'],
+                          common_args['dryrun'],
+                          common_args['build_path']]
+    export_cmd_parser = sub_cmd_parser.add_parser('export',
+                                                  epilog=textwrap.dedent(HELP_EXPORT_EXAMPLES),
+                                                  formatter_class=argparse.RawDescriptionHelpFormatter,
+                                                  parents=export_cmd_parents,
+                                                  description=HELP_EXPORT_CMD_DESCRIPTION)
+    export_cmd_parser.add_argument('--baseline-profile',
+                                   default='default',
+                                   help=HELP_EXPORT_BASELINE_PROFILE)
+    export_cmd_parser.add_argument('component',
+                                   choices=EXPORT_COMPONENTS.keys(),
+                                   help=HELP_CMD_COMPONENTS)
+    export_cmd_parser.add_argument('config_profile')
+    export_cmd_parser.add_argument('--sort', '-s',
+                                   help=HELP_EXPORT_CMD_SORT,
+                                   action='store_true')
+    export_cmd_parser.add_argument('--no-upgrade', dest='am_export_no_upgrade',
+                                   help=HELP_EXPORT_CMD_AM_NO_UPGRADE,
+                                   action='store_true', default=False)
+    export_cmd_parser.add_argument('--am-upgrader-rules', '-R',
+                                   default=RULES_PATH,
+                                   help=HELP_EXPORT_AM_UPG_RULES)
+    export_envrel = export_cmd_parser.add_mutually_exclusive_group()
+    export_envrel.add_argument('--release-name', '-l',
+                                   help=HELP_RELEASE_NAME)
+    export_envrel.add_argument('--env-name', '-e', help=HELP_ENV_NAME)
+    export_cmd_parser.set_defaults(func=run_export)
+
+    # build sub command
+    build_parents = [common_args['debug'],
+                     common_args['dryrun'],
+                     common_args['build_path'],
+                     common_args['config_profile_def'],
+                     common_args['helm_path'],
+                     common_args['kustomize_path']]
+    build_cmd_parser = sub_cmd_parser.add_parser('build',
+                                                epilog=textwrap.dedent(HELP_BUILD_EXAMPLES),
+                                                formatter_class=argparse.RawTextHelpFormatter,
+                                                parents=build_parents,
+                                                description=HELP_BUILD_CMD_DESCRIPTION)
+    build_cmd_parser.add_argument('--env-name', '-e', required=True, help=HELP_ENV_NAME)
+    build_cmd_parser.add_argument('--push-to', '-r', help=HELP_BUILD_PUSH_TO)
+    build_cmd_parser.add_argument('--tag', '-t', default='latest', help=HELP_BUILD_TAG)
+    build_cmd_parser.add_argument('--skip-image-append', dest='skip_image_append',
+                                   help=HELP_BUILD_SKIP_IMG_APP,
+                                   action='store_true', default=False)
+    build_cmd_parser.add_argument('component',
+                                  choices=BUILD_COMPONENTS.keys(),
+                                  help=HELP_CMD_COMPONENTS)
+    build_cmd_parser.add_argument('docker_args',
+                                  nargs=argparse.REMAINDER,
+                                  help=HELP_BUILD_DOCKER_ARGS)
+    build_cmd_parser.set_defaults(func=run_build)
+
+    # path sub command
+    path_cmd_parents = [common_args['debug'],
+                        common_args['dryrun'],
+                        common_args['build_path'],
+                        common_args['helm_path'],
+                        common_args['kustomize_path']]
+    path_cmd_parser = sub_cmd_parser.add_parser('path',
+                                                epilog=textwrap.dedent(HELP_PATH_EXAMPLES),
+                                                formatter_class=argparse.RawTextHelpFormatter,
+                                                parents=path_cmd_parents,
+                                                description=HELP_PATH_CMD_DESCRIPTION)
+    path_sub_cmd_parser = path_cmd_parser.add_subparsers(dest='tool')
+    path_cmd_parser.set_defaults(func=run_path)
+
+    # docker paths
+    path_docker_parser = path_sub_cmd_parser.add_parser('docker',
+                                                        epilog=textwrap.dedent(HELP_PATH_EXAMPLES),
+                                                        formatter_class=argparse.RawTextHelpFormatter,
+                                                        description=HELP_PATH_CMD_DESCRIPTION)
+    path_docker_parser.add_argument('component',
+                                    help=HELP_CMD_COMPONENTS,
+                                    choices=PLATFORM_COMPONENTS.keys())
+    path_docker_parser.add_argument('config_profile',
+                                    help=HELP_PATH_DOCKER_PROFILE_NAME,
+                                    nargs='?',
+                                    default='')
+
+    # helm paths
+    path_helm_parser = path_sub_cmd_parser.add_parser('helm',
+                                                           epilog=textwrap.dedent(HELP_PATH_EXAMPLES),
+                                                           formatter_class=argparse.RawTextHelpFormatter,
+                                                           description=HELP_PATH_CMD_DESCRIPTION)
+    path_helm_parser.add_argument('env_name',
+                                  help=HELP_PATH_HELM_ENV_NAME,
+                                  nargs='?',
+                                  default='')
+
+    # kustomize paths
+    path_kustomize_parser = path_sub_cmd_parser.add_parser('kustomize',
+                                                           epilog=textwrap.dedent(HELP_PATH_EXAMPLES),
+                                                           formatter_class=argparse.RawTextHelpFormatter,
+                                                           description=HELP_PATH_CMD_DESCRIPTION)
+    path_kustomize_parser.add_argument('layer',
+                                       help=HELP_PATH_KUSTOMIZE_LAYER,
+                                       choices=('base', 'overlay'))
+    path_kustomize_parser.add_argument('kustomization',
+                                       help=HELP_PATH_KUSTOMIZE_PROFILE,
+                                       nargs='?',
+                                       default='')
+    path_kustomize_parser.add_argument('sub_kustomization',
+                                       help=HELP_PATH_KUSTOMIZE_SUBPROFILE,
+                                       nargs='?',
+                                       default='')
+
+    return parser.parse_args()
+
+def run(args, config):
+    """ Run config logic """
+    global log
+    log = utils.logger(level=args.log_level)
+    if args.cmd == 'export' and args.am_export_no_upgrade and not args.component == 'am':
+        log.error(f'--no-upgrade is only available for PingAM')
+        sys.exit(1)
+    args.func(args, config)
+
+
+if __name__ == '__main__':
+    common_args = common.setup_args()
+    args = setup_args(common_args)
+    overrides = utils.process_overrides(root_path,
+                                        getattr(args, 'helm_path', None),
+                                        getattr(args, 'kustomize_path', None),
+                                        getattr(args, 'build_path', None),
+                                        getattr(args, 'no_helm', False),
+                                        getattr(args, 'no_kustomize', False),
+                                        getattr(args, 'releases_src', None),
+                                        getattr(args, 'pull_policy', None),
+                                        getattr(args, 'source', None),
+                                        getattr(args, 'ssl_secretname', None),
+                                        debug=args.debug)
+    run(args, overrides)

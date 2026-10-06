@@ -1,0 +1,277 @@
+{{- if .Values.am.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: am
+  labels:
+    {{- include "identity-platform.labels" . | nindent 4 }}
+    {{- with .Values.am.podLabels }}
+      {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  {{- if not .Values.am.autoscaling.enabled }}
+  replicas: {{ .Values.am.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "identity-platform.selectorLabels" . | nindent 6 }}
+      {{- with .Values.am.podLabels }}
+        {{- toYaml . | nindent 6 }}
+      {{- end }}
+  template:
+    metadata:
+      annotations:
+        {{- if .Values.platform.annotations.deploymentDate.enabled }}
+        deployment-date: {{ now | quote }}
+        {{- end }}
+        {{- with .Values.am.podAnnotations }}
+          {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "identity-platform.selectorLabels" . | nindent 8 }}
+        {{- with .Values.am.podLabels }}
+          {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- if .Values.am.image.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml .Values.am.image.imagePullSecrets | nindent 8 }}
+      {{- else if .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml .Values.imagePullSecrets | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "identity-platform.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.am.podSecurityContext | nindent 8 }}
+      volumes:
+        - name: custom
+          emptyDir: {}
+        - name: fbc
+          emptyDir: {}
+        - name: writeable
+          emptyDir: {}
+        - name: am-secrets
+          projected:
+            sources:
+        {{- if eq (include "keystore_create.resources.enabled" .) "true" }}
+            - secret:
+                name: keystore-create
+                items:
+                - key: KEYSTORE_PASSWORD
+                  path: .storepass
+                - key: KEYSTORE_PASSWORD
+                  path: .keypass
+            - secret:
+                name: keystore
+        {{- else }}
+            - secret:
+                name: am-passwords
+            - secret:
+                name: am-keystore
+        {{- end }}
+        - name: amster-key
+          secret:
+            secretName: amster
+            items:
+            - key: {{ include "amster.ssh.public_key_name" . | quote }}
+              path: authorized_keys
+        - name: truststore
+          projected:
+            sources:
+              - secret:
+                  name: ds-ssl-keypair
+              {{- if .Values.platform.truststore.secret.enabled }}
+              - secret:
+                  name: {{ .Values.platform.truststore.secret.name }}
+                  optional: true
+              {{- end }}
+        - name: new-truststore
+          emptyDir: {}
+        - name: am-logback
+          configMap:
+            name: am-logback
+        - name: entrypoint-scripts
+          configMap:
+            name: am-entrypoint
+            defaultMode: 0755
+        - name: am-import-pem-certs
+          configMap:
+            name: am-import-pem-certs
+            defaultMode: 0755
+        - name: am-init-scripts
+          configMap:
+            name: am-init-scripts
+            defaultMode: 0755
+        {{- if .Values.pingone.secretName }}
+        - name: pingone-secrets
+          secret:
+            secretName: {{ .Values.pingone.secretName }}
+        {{- end }}
+      initContainers:
+        - name: custom-vol-init
+          image: "{{ .Values.am_custom.image.repository }}:{{ .Values.am_custom.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.am_custom.image.pullPolicy }}
+          volumeMounts:
+          - mountPath: /custom
+            name: custom
+          - mountPath: /scripts
+            name: am-init-scripts
+          command: [/scripts/custom-vol-init.sh]
+        - name: filesystem-init
+          image: "{{ .Values.am.image.repository }}:{{ .Values.am.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.am.image.pullPolicy }}
+          volumeMounts:
+          - mountPath: /fbc
+            name: fbc
+          - mountPath: /custom
+            name: custom
+          - mountPath: /scripts
+            name: am-init-scripts
+          - mountPath: /writeable
+            name: writeable
+          command: [/scripts/filesystem-init.sh]
+        - name: truststore-init
+          image: "{{ .Values.am.image.repository }}:{{ .Values.am.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.am.image.pullPolicy }}
+          volumeMounts:
+          - name: new-truststore
+            mountPath: /truststore
+          - name: truststore
+            mountPath: /var/run/secrets/truststore
+          - name: am-import-pem-certs
+            mountPath: /home/forgerock/import-pem-certs.sh
+            subPath: import-pem-certs.sh
+          command: ["/home/forgerock/import-pem-certs.sh"]
+          env:
+          - name: TRUSTSTORE_PATH
+            value: /truststore/amtruststore
+          - name: TRUSTSTORE_PASSWORD
+            value: changeit
+          - name: AM_PEM_TRUSTSTORE
+            value: /usr/lib/ssl/cert.pem
+          - name: AM_PEM_TRUSTSTORE_DS
+            value: /var/run/secrets/truststore/ca.crt
+          {{- if .Values.platform.truststore.secret.enabled }}
+          - name: AM_PEM_TRUSTSTORE_EXTRA
+            value: /var/run/secrets/truststore/{{ .Values.platform.truststore.secret.key }}
+          {{- end }}
+      containers:
+        - name: openam
+          securityContext:
+            {{- toYaml .Values.am.securityContext | nindent 12 }}
+          image: "{{ .Values.am.image.repository }}:{{ .Values.am.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.am.image.pullPolicy }}
+          command:
+            - bash
+            - /home/forgerock/entrypoint-scripts/entrypoint.sh
+          env:
+          - name: NAMESPACE
+            valueFrom:
+              fieldRef:
+                apiVersion: v1
+                fieldPath: metadata.namespace
+          - name: AM_STORES_SSL_ENABLED
+            value: "true"
+          - name: TRUSTSTORE_PATH
+            value: /home/forgerock/amtruststore
+          - name: TRUSTSTORE_PASSWORD
+            value: changeit
+          - name: AM_STORES_USER_TYPE
+            value: LDAPv3ForForgeRockIAM
+          {{- if and .Values.platform.secrets_enabled (or .Values.platform.base_generate (index .Values.platform.secrets "am_env_secrets")) }}
+          - name: SECRET_GENERATOR_AM_ENV_SECRETS
+            value: "true"
+          {{- end }}
+          {{- with .Values.platform.env }}
+          {{- toYaml . | nindent 10 }}
+          {{- end }}
+          {{- with .Values.am.env }}
+          {{- toYaml . | nindent 10 }}
+          {{- end }}
+          envFrom:
+          - secretRef:
+              name: am-env-secrets
+          - configMapRef:
+              name: platform-config
+          - secretRef:
+              name: ds-env-secrets
+          {{- with .Values.platform.envFrom }}
+          {{- toYaml . | nindent 10 }}
+          {{- end }}
+          {{- with .Values.am.envFrom }}
+          {{- toYaml . | nindent 10 }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+            - name: https
+              containerPort: 8081
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /am/json/health/live
+              port: http
+            {{- with .Values.am.livenessProbe }}
+              {{- toYaml . | nindent 12 }}
+            {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /am/json/health/ready
+              port: http
+            {{- with .Values.am.readinessProbe }}
+              {{- toYaml . | nindent 12 }}
+            {{- end }}
+          startupProbe:
+            httpGet:
+              path: /am/json/health/live
+              port: http
+            {{- with .Values.am.startupProbe }}
+              {{- toYaml . | nindent 12 }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.am.resources | nindent 12 }}
+          volumeMounts:
+          - name: writeable
+            mountPath: /home/forgerock
+            subPath: home/forgerock
+          - name: new-truststore
+            mountPath: /home/forgerock/amtruststore
+            readOnly: true
+            subPath: amtruststore
+          - name: am-secrets
+            mountPath: /var/run/secrets/am
+          {{- if .Values.pingone.secretName }}
+          - name: pingone-secrets
+            mountPath: /var/run/secrets/pingone
+            readOnly: true
+          {{- end }}
+          - name: amster-key
+            mountPath: /var/run/secrets/amster
+          - name: fbc
+            mountPath: /home/forgerock/openam
+          - name: am-logback
+            mountPath: /home/forgerock/logging
+          - name: entrypoint-scripts
+            mountPath: /home/forgerock/entrypoint-scripts
+          - name: writeable
+            mountPath: /usr/local/tomcat
+            subPath: tomcat
+          - name: writeable
+            mountPath: /tmp
+            subPath: tmp
+      {{- with .Values.am.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.am.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      tolerations:
+      {{- if .Values.am.tolerations }}
+        {{- toYaml .Values.am.tolerations | nindent 8 }}
+      {{- else if .Values.platform.tolerations }}
+        {{- toYaml .Values.platform.tolerations | nindent 8 }}
+      {{- end }}
+{{- end }}

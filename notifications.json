@@ -1,0 +1,13 @@
+{
+  "rules":[{
+    "inverted":false,
+    "match": "/**/*",
+    "events": ["Push", "BranchCreate"],
+    "notifications":[{
+      "address":"forgeops-team@pingidentity.com",
+      "prefix":"",
+      "sendSeparate":false,
+      "includeDiff":true
+    }]
+  }]
+}

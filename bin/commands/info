@@ -1,0 +1,397 @@
+#!/usr/bin/env python3
+"""Output secrets and URLs for a ForgeOps deployment"""
+
+from copy import copy
+import argparse
+import json
+import os
+import re
+import sys
+import site
+import textwrap
+from pathlib import Path
+
+file_name = Path(__file__)
+current_file_path = file_name.parent.resolve()
+root_path = [parent_path for parent_path in current_file_path.parents if (parent_path / 'README.md').exists()][0]
+dependencies_dir = os.path.join(root_path, 'lib', 'dependencies')
+# Insert lib folders to python path
+sys.path.insert(0, str(root_path))
+sys.path.insert(1, str(dependencies_dir) + site.USER_SITE.replace(site.USER_BASE, ''))
+
+from lib.python.ensure_configuration_is_valid_or_exit import print_how_to_install_dependencies
+try:
+    import yaml
+    from mergedeep import merge
+except:
+    print_how_to_install_dependencies()
+import lib.python.utils as utils
+from lib.python.releases import (
+        ALT_RELEASES,
+        BASE_IMAGE_NAMES,
+        RELEASES_SRC_DEF,
+        is_valid_release,
+        get_releases,
+        get_release_from_tag,
+        parse_release_str,
+        select_tag
+    )
+
+
+# Setup a custom argparse formatter so we can use multiple formatters
+class Formatter(argparse.ArgumentDefaultsHelpFormatter, argparse.RawDescriptionHelpFormatter):
+    """ Custom Help formatter """
+
+
+def list_envs(overlay_root, helm_root, debug=False, is_json_format=False):
+    """
+    List all environments and their FQDNs
+    in following format:
+        - env_name (FQDN)
+    """
+
+    skip_envs = ['amster-export', 'amster-run', 'default', 'internal-profiles']
+    k_envs = [d.name for d in ( overlay_root).iterdir() if d.is_dir()]
+    h_envs = [d.name for d in ( helm_root).iterdir() if d.is_dir()]
+    envs = list(set(k_envs + h_envs) - set(skip_envs))
+    env_list = None
+    if is_json_format:
+        env_list = {}
+    else:
+        print('Available environments:')
+    for env in envs:
+        # Skip any env with default in the name
+        if 'default' in env:
+            continue
+        # Load FQDN of the environment
+        host = 'None'
+        if env in h_envs:
+            values_file = helm_root / env / 'values.yaml'
+            values = {}
+            if values_file.is_file():
+                with(open(values_file, encoding='utf-8')) as f:
+                    values = yaml.safe_load(f)
+                if utils.key_exists(values, 'platform.ingress.hosts'):
+                    host = values['platform']['ingress']['hosts'][0]
+        else:
+            platform_config = overlay_root / env / 'base' / 'platform-config.yaml'
+            pc = {}
+            if platform_config.is_file():
+                with(open(platform_config, encoding='utf-8')) as f:
+                    pc = yaml.safe_load(f)
+                if utils.key_exists(pc, 'data.FQDN'):
+                    host = pc['data']['FQDN']
+        # Print available envs and exit.
+        if is_json_format:
+            env_list[env] = host
+        else:
+            print(f'\t - {env} ({host})')
+
+    if is_json_format:
+        print(json.dumps(env_list))
+
+
+def shared_env_info(name, releases, repo, tag, debug=False):
+    """
+    Shared code between listing info for both Helm and Kustomize environments
+    """
+
+    image_name = name
+    if 'ds' in name:
+        image_name = 'ds'
+    releases[image_name].pop('dev', None) # Remove dev release
+    if tag is None:
+        tag = 'latest'
+    current_image = f"{repo}:{tag}"
+    if debug:
+        print(f"current_image={current_image}")
+    latest_tag = 'No release string discovered'
+    if is_valid_release(tag, debug):
+        release_name = get_release_from_tag(tag, debug)
+        current_release = parse_release_str(release_name)
+        if debug:
+            print(f"release_name={release_name}")
+        maj_min = f"{current_release.major}.{current_release.minor}"
+        full = str(current_release)
+        if tag in ALT_RELEASES:
+            latest_tag = tag
+        elif utils.key_exists(releases[image_name], f"{maj_min}_{full}", '_'):
+            if debug:
+                print(f"shared_env_info(): Found {release_name} for {image_name}")
+            latest_tag = releases[image_name][maj_min][full]['tags'][-1]
+        else:
+            if debug:
+                print("release_name is not set or custom, selecting latest")
+            latest_maj_min = list(releases[image_name].keys())[-1]
+            releases[image_name][latest_maj_min].pop('scan', None)
+            latest_full = list(releases[image_name][latest_maj_min].keys())[-1]
+            latest_tag = releases[image_name][latest_maj_min][latest_full]['tags'][-1]
+        if debug:
+            print(f"latest_tag={latest_tag}")
+
+    data = {
+        'images': {
+            f"{name}": {
+                'current_image': f"{repo}:{tag}",
+                'latest_tag': latest_tag
+            }
+        }
+    }
+    return data
+
+def list_env_info(env_name, overlay_root, helm_root, releases, do_helm=True, do_kustomize=True, debug=False, is_json_format=False):
+    """
+    Get detailed info about an env
+    in following format:
+        - FQDN: (FQDN)
+        - component: image:tag (latest tag)
+    """
+
+    helm_env_path = Path(helm_root) / env_name
+    kust_env_path = Path(overlay_root) / env_name
+    env_info = {'not_found': False}
+    if helm_env_path.is_dir() and do_helm:
+        values_file = helm_env_path / 'values.yaml'
+        values = yaml.safe_load(open(values_file))
+        if utils.key_exists(values, 'platform.ingress.hosts'):
+            host = values['platform']['ingress']['hosts'][0]
+            env_info['FQDN'] = host
+        for k in list(values.keys()):
+            if debug and not is_json_format:
+                print(f"k = {k}")
+            name = k.replace('_', '-')
+            if debug and not is_json_format:
+                print(f"name={name}")
+            if name not in utils.ENV_COMPONENTS_VALID:
+                continue
+            v = values[k]
+            repo = name
+            if 'ds' in name:
+                repo = 'ds'
+            tag = None
+            if utils.key_exists(v, 'image.repository'):
+                if 'repository' in v['image']:
+                    repo = v['image']['repository']
+                if 'tag' in v['image']:
+                    tag = v['image']['tag']
+            else:
+                continue
+            result = shared_env_info(name, releases, repo, tag, debug)
+            env_info = merge(env_info, result)
+    elif kust_env_path.is_dir() and do_kustomize:
+        platform_config = kust_env_path / 'base' / 'platform-config.yaml'
+        if platform_config.is_file():
+            pc = yaml.safe_load(open(platform_config))
+            if utils.key_exists(pc, 'data.FQDN'):
+                env_info['FQDN'] = pc['data']['FQDN']
+
+        image_defaulter_file = kust_env_path / 'image-defaulter' / 'kustomization.yaml'
+        kustomization = yaml.safe_load(open(image_defaulter_file))
+        if 'images' in kustomization:
+            for img in kustomization['images']:
+                if debug:
+                    print(f"img = {img}")
+                name = re.sub(r'^\.\*(.*)[:]?\.\*$', r'\1', img['name']).replace(':', '')
+                #name = re.sub(r':', '', name)
+                if debug:
+                    print(f"name={name}")
+                if name not in utils.ENV_COMPONENTS_VALID:
+                    continue
+                repo = img['newName']
+                tag = None
+                if 'newTag' in img:
+                    tag = img['newTag']
+                result = shared_env_info(name, releases, repo, tag, debug)
+                env_info = merge(env_info, result)
+    else:
+        env_info['not_found'] = True
+
+    if is_json_format:
+        if not env_info['not_found']:
+            env_info.pop('not_found', None)
+        print(json.dumps(env_info))
+    else:
+        print(f"Details for {env_name}:")
+        if env_info['not_found']:
+            print("\tNo valid environment found.")
+        else:
+            env_info.pop('not_found', None)
+            print(f"\tFQDN: {env_info['FQDN']}")
+            if 'images' in env_info:
+                components = list(env_info['images'].keys())
+                components.sort()
+                for component in components:
+                    data = env_info['images'][component]
+                    print(f"\t{component}: {data['current_image']} ({data['latest_tag']})")
+            else:
+                print("\tNo images found. Using chart defaults.")
+
+
+def list_releases(releases, components, is_json_format=False):
+    """
+    List all supported releases, with the latest image tag for each patch release.
+    """
+
+    releases_list = {}
+
+    for component in components:
+        for alt_release in ALT_RELEASES:
+            releases[component].pop(alt_release, None)
+
+        releases_list[component] = {}
+        for maj_release in releases[component].keys():
+            if 'scan' in releases[component][maj_release] and releases[component][maj_release]['scan'] is not None:
+                releases[component][maj_release].pop('scan', None)
+                releases_list[component][maj_release] = {}
+                for patch_release in releases[component][maj_release].keys():
+                    tags = releases[component][maj_release][patch_release]['tags']
+                    releases_list[component][maj_release][patch_release] = tags[-1]
+
+    if is_json_format:
+        print(json.dumps(releases_list))
+    else:
+        c_space = 14
+        v_space = 16
+        tag_space = 25
+        table_title = f"{'Component'.ljust(c_space)} | " \
+                      f"{'Version'.ljust(v_space)} | " \
+                      f"{'Latest Tag'.ljust(tag_space)}"
+        print(table_title)
+        for component in releases_list.keys():
+            for maj_release in releases_list[component].keys():
+                for patch_release in releases_list[component][maj_release].keys():
+                    print(f"{component.ljust(c_space)} | " \
+                          f"{patch_release.ljust(v_space)} | " \
+                          f"{releases_list[component][maj_release][patch_release].ljust(tag_space)}")
+
+
+def get_release_details(release_str, releases, components, is_json_format=False):
+    """
+    Print all of the image tags for the requested release
+    """
+
+    release = parse_release_str(release_str)
+    release_details = {
+        'supported': False,
+        'scanned': False,
+        'tags': {}
+    }
+    maj_min = f"{release.major}.{release.minor}"
+    full = str(release)
+    for component in components:
+        releases[component].pop('dev', None)
+        if maj_min in releases[component]:
+            if 'scan' in releases[component][maj_min]:
+                if releases[component][maj_min]['scan'] is not None:
+                    release_details['supported'] = True
+                    release_details['scanned'] = releases[component][maj_min]['scan']
+            verbose = not is_json_format
+            release_details['tags'][component], _ = select_tag(component, releases, release, components, all_tags=True, verbose=verbose)
+
+    if is_json_format:
+        print(json.dumps(release_details))
+    else:
+        print(f"Details for {full} release:")
+        print(f"Supported: {release_details['supported']}")
+        print(f"Scanned: {release_details['scanned']}")
+        print("--- Available Tags ---")
+        for component in release_details['tags'].keys():
+            print(f"{component}: {release_details['tags'][component]}")
+
+
+def setup_args():
+    """ Setup argparse parser """
+    prog = "forgeops info"
+
+    help_epilog = f"""
+examples:
+# Get URL and user/password info in a deployment namespace
+{prog} --namespace prod
+
+# List environments and FQDNs
+{prog} --envs
+
+# Get details about an env
+{prog} --env-name prod
+"""
+
+    parser = argparse.ArgumentParser(description="Display basic info for a ForgeRock Identity Platform k8s deployment",
+                                     epilog=textwrap.dedent(help_epilog),
+                                     prog=prog,
+                                     formatter_class=Formatter)
+    parser.add_argument('--debug', '-d', action='store_true', help='Turn on debugging')
+    parser.add_argument('-b', '--build-path', default=argparse.SUPPRESS,
+                        help='Docker dir to use [absolute or relative to forgeops root] (default: docker)')
+    parser.add_argument('-e', '--env-name', help='Name of environment to get info about')
+    parser.add_argument('-k', '--kustomize-path', default=argparse.SUPPRESS,
+                        help='Kustomize dir to use [absolute or relative to forgeops root] (default: kustomize)')
+    parser.add_argument('-H', '--helm-path', default=argparse.SUPPRESS,
+                        help='Dir to store Helm values files [absolute or relative to forgeops root] (default: helm)')
+    parser.add_argument('--no-helm', action='store_true', help="Don't create/manage Helm values files")
+    parser.add_argument('--no-kustomize', action='store_true', help="Don't create/manage Kustomize overlay")
+    parser.add_argument('--json', dest='is_json_format', action='store_true', help='Print information in JSON format')
+    parser.add_argument('--namespace', '-n', default=argparse.SUPPRESS, help='Target namespace (default: current ctx namespace)')
+    parser.add_argument('--envs', action='store_true', help='List environments')
+    parser.add_argument('--list-releases', action='store_true', help='List releases')
+    parser.add_argument('--release', help='Get details for a specific release')
+    parser.add_argument('--releases-src', default=argparse.SUPPRESS, help=f"URL or path where release files live (default: {RELEASES_SRC_DEF})")
+    # Needed to be called from bin/forgeops, but ignored
+    parser.add_argument('--dryrun', dest='dryrun', action='store_true', help=argparse.SUPPRESS)
+    parser.add_argument('--verbose', dest='verbose', action='store_true', help=argparse.SUPPRESS)
+
+    return parser.parse_args()
+
+
+def run(args, config):
+    """ Execute the command logic """
+    release_components = ['am', 'amster', 'idm', 'ds', 'admin-ui', 'end-user-ui', 'login-ui', 'ig']
+    is_json_format = getattr(args, 'is_json_format', None)
+
+    releases = {}
+    if args.envs or args.env_name or args.list_releases or args.release:
+        releases = get_releases(config['releases_src'], release_components)
+
+    if args.envs:
+        list_envs(config['overlay_root'], config['helm_path'], args.debug, is_json_format)
+    elif args.env_name:
+        list_env_info(args.env_name,
+                      config['overlay_root'],
+                      config['helm_path'],
+                      releases,
+                      config['do_helm'],
+                      config['do_kustomize'],
+                      args.debug,
+                      is_json_format)
+    elif args.list_releases:
+        list_releases(releases, release_components, is_json_format)
+    elif args.release:
+        get_release_details(args.release, releases, release_components, is_json_format)
+    else:
+        ctx_namespace = utils.get_namespace()
+        ctx = utils.get_context()
+        namespace = getattr(args, 'namespace', None) or ctx_namespace
+
+        if not is_json_format:
+            utils.message(f'Targeting namespace: "{namespace}".')
+
+        secrets = utils.printsecrets(namespace, not is_json_format)
+        urls = utils.printurls(namespace, not is_json_format)
+        output = {'context': ctx, 'namespace': namespace, 'secrets': secrets, 'urls': urls}
+        if is_json_format:
+            print(json.dumps(output))
+
+
+if __name__ == '__main__':
+    args = setup_args()
+    overrides = utils.process_overrides(root_path,
+                                        getattr(args, 'helm_path', None),
+                                        getattr(args, 'kustomize_path', None),
+                                        getattr(args, 'build_path', None),
+                                        getattr(args, 'no_helm', False),
+                                        getattr(args, 'no_kustomize', False),
+                                        getattr(args, 'releases_src', None),
+                                        getattr(args, 'pull_policy', None),
+                                        getattr(args, 'source', None),
+                                        getattr(args, 'ssl_secretname', None),
+                                        debug=args.debug)
+    run(args, overrides)

@@ -1,0 +1,155 @@
+#!/usr/bin/env bash
+
+set -e
+
+# Grab our starting dir
+start_dir=$(pwd)
+# Figure out the dir we live in
+SCRIPT_DIR=$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )
+# Bring in our standard functions
+source $SCRIPT_DIR/../../lib/shell/stdlib.sh
+# Bring in common.sh
+source $SCRIPT_DIR/common.sh
+# Go back to where we started
+cd "${start_dir}"
+
+usage() {
+  local usage_msg=$(cat<<EOM
+usage: $PROG --env-name ENV_NAME [OPTIONS] COMPONENT [COMPONENT]...
+
+Build container images for one or more Ping Identity Platform components.
+
+Notes:
+  * building amster images is not supported, use bin/amster
+  * Only ${COMPONENTS_FBC[*]} respect --config-profile
+  * Set PUSH_TO in forgeops.conf to configure for the team
+
+OPTIONS:
+  -h|--help                        : display usage and exit
+  -d|--debug                       : turn on debugging
+  --dryrun                         : do a dry run
+  -v|--verbose                     : be verbose
+  -b|--build-path <path>           : path to build dir (default: docker)
+  -e|--env-name ENV_NAME           : Name of environment to target
+  -H|--helm-path                   : path to helm dir (default: helm)
+                                     (full path or relative to git root)
+  -k|--kustomize-path              : path to kustomize dir (default: kustomize)
+                                     (full path or relative to git root)
+  -p|--config-profile <profile>    : name of the config profile to use
+  -r|--push-to <registry>          : container registry to push built images to
+  -l|--release-name <release-name> : release to use for base images
+  --reset                          : reset image-defaulter to git index
+  -t|--tag <tag>                   : image tag to use
+  --skip-image-append              : do not append the image name to the repo
+
+Valid Components:
+  ${COMPONENTS_VALID[*]}
+
+Examples:
+  Normal operation:
+  $PROG -p prod -e prod --push-to gcr.io/my-project/forgeops --release-name prod am
+
+  Do a dryrun:
+  $PROG -p prod -e prod --push-to gcr.io/my-project/forgeops --release-name prod  --dryrun am
+
+  Use AWS ECR repo directly:
+  $PROG -p prod -e prod --push-to 1234567890.dkr.ecr.us-east-1.amazonaws.com/prod-am --skip-image-append --release-name prod am
+
+EOM
+)
+
+  usageStd $1 "$usage_msg" "$2"
+}
+
+# Setup valid components now so they get presented in the usage
+COMPONENTS_FBC=( "am" "idm" "ig")
+COMPONENTS_VALID=( ${COMPONENTS_APPS[@]} 'ds' 'ig' 'platform' 'am-config-upgrader')
+
+# Code in common.sh
+processArgs $*
+checkComponents
+kubeInit
+
+if [ -d "$OVERLAY_PATH" ] ; then
+  message "Overlay exists: $OVERLAY" "debug"
+else
+  usage 1 "Overlay dir doesn't exist: $OVERLAY_PATH"
+fi
+
+CONTAINER_ENGINE=${CONTAINER_ENGINE:-docker}
+message "CONTAINER_ENGINE=$CONTAINER_ENGINE" "debug"
+
+if [ -d "$BUILD_PATH" ] ; then
+  message "Build path exists: $BUILD_PATH" "debug"
+  BUILD_PATH_OPT="-b $BUILD_PATH"
+else
+  usage 1 "Build path doesn't exist: $BUILD_PATH"
+  BUILD_PATH_OPT=
+fi
+
+if [ "$RESET" = true ] ; then
+  echo "Reset to git index: $BUILD_PATH/image-defaulter"
+  runOrPrint git restore $OVERLAY_PATH/image-defaulter
+  exit 0
+fi
+
+if containsElement "platform" "${COMPONENTS[*]}" ; then
+  message "Component 'platform' given, setting components"
+  COMPONENTS=( 'am' 'idm' 'ds' 'amster' )
+fi
+message "COMPONENTS=$COMPONENTS" "debug"
+
+for c in ${COMPONENTS[@]} ; do
+  message "c=$c" "debug"
+  BUILD_ARGS_REAL=${BUILD_ARGS:-}
+  if containsElement $c "${COMPONENTS_FBC[*]}" && [ -n "$CONFIG_PROFILE" ] ; then
+    BUILD_ARGS_REAL+=" --build-arg CONFIG_PROFILE=$CONFIG_PROFILE"
+  fi
+
+  build_d=$BUILD_PATH/$c
+  if [ -d "$build_d" ] ; then
+    message "$build_d exists." "debug"
+  else
+    echo "WARNING: $build_d doesn't exist, skipping"
+    continue
+  fi
+
+  releases_d=$build_d/releases
+  if [ -d "$releases_d" ] && [ -n "$RELEASE_NAME" ] ; then
+    release_f=$releases_d/$RELEASE_NAME
+    if [ -f $release_f ] ; then
+      while IFS= read -r line ; do
+        BUILD_ARGS_REAL+=" --build-arg $line"
+      done < $release_f
+    fi
+  fi
+
+  IMAGE=$c
+  if [ -n "$PUSH_TO" ] && [ "$PUSH_TO" != 'none' ] ; then
+    if [ "$SKIP_IMAGE_APPEND" = true ] ; then
+      IMAGE="${PUSH_TO}"
+    else
+      IMAGE="${PUSH_TO}/${IMAGE}"
+    fi
+  fi
+  TAG=${TAG:-latest}
+  TAG_OPT="-t ${TAG}"
+  IMAGE="${IMAGE}:${TAG}"
+
+  runOrPrint $CONTAINER_ENGINE build $BUILD_ARGS_REAL -t $IMAGE -f $build_d/Dockerfile $build_d
+
+  REPO_OPT=
+  if [ -n "$PUSH_TO" ] && [ "$PUSH_TO" != 'none' ] && [[ "$IMAGE" =~ "/" ]] ; then
+    runOrPrint $CONTAINER_ENGINE push $IMAGE
+    REPO_OPT="--image-repo ${PUSH_TO}"
+  else
+    REPO_OPT="--image-repo none"
+  fi
+
+  IMG_APP_OPT=
+  if [ "$SKIP_IMAGE_APPEND" = true ] ; then
+    IMG_APP_OPT="--skip-image-append"
+  fi
+
+  runOrPrint $SCRIPT_DIR/image -e $ENV_NAME -k $KUSTOMIZE_PATH -H $HELM_PATH $REPO_OPT $TAG_OPT $BUILD_PATH_OPT $IMG_APP_OPT $c
+done

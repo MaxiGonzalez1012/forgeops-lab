@@ -1,0 +1,4 @@
+ds_set_passwords:
+  image:
+    repository: "ds"
+    tag: ""

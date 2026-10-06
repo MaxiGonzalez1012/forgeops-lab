@@ -1,0 +1,49 @@
+{{- if .Values.remoteIps }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rcs-network-policy
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: rcs
+  policyTypes:
+    - Ingress
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+    - to:
+      ports:
+        - protocol: TCP
+          port: 1636
+    {{- if eq .Values.mode "client" }}
+    - to:
+        {{- range $cidr := .Values.remoteIps }}
+        - ipBlock:
+            cidr: {{ $cidr }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: 443
+    {{- end }}
+  {{- if eq .Values.mode "server" }}
+  ingress:
+    - from:
+        {{- range $cidr := .Values.remoteIps }}
+        - ipBlock:
+            cidr: {{ $cidr }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: 8759
+  {{- end }}
+{{- end }}

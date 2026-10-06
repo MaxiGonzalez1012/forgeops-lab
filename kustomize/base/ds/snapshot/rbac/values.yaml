@@ -1,0 +1,10 @@
+ds_snapshot:
+  rbacCreate: true
+  rbacOnly: true
+  appendNSToRole: false
+ds_cts:
+  snapshot:
+    enabled: false
+ds_idrepo:
+  snapshot:
+    enabled: false

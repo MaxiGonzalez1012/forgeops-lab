@@ -1,0 +1,1254 @@
+# Default values for identity-platform.
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  # Specifies whether a service account should be created
+  create: false
+  # Annotations to add to the service account
+  annotations: {}
+  # The name of the service account to use.
+  # If not set and create is true, a name is generated using the fullname template
+  name: ""
+
+platform:
+  annotations:
+    deploymentDate:
+      enabled: false
+  base:
+    enabled: true
+  # Only used when using bin/base-generate.sh and need something to run in an alternate manner
+  base_generate: false
+  configMap:
+    enabled: false
+    # Provide extra ENV vars to add to platform-config ConfigMap
+    data: {}
+      #ENVIRONMENT: "test"
+  cert_manager:
+    # If disabled, the ingress tls issuer and the PingDS certificates will be not be created/deployed
+    # (DS certificates are ds-master-keypair and ds-ssl-keypair)
+    enabled: true
+  env: []
+    #- name: "MY_ENV"
+    #  value: "value"
+  envFrom: []
+    #- secretRef:
+    #    name: my_secret
+  external_ds:
+    enabled: false
+    cts_hosts: []
+    idrepo_hosts: []
+  grafana:
+    enabled: false
+  ds_certs:
+    enabled: true
+  ingress:
+    enabled: true
+    className: "nginx"
+    annotations:
+      # kubernetes.io/tls-acme: "true"
+      # Nginx specific ingress annotations
+      nginx.ingress.kubernetes.io/affinity: cookie
+      nginx.ingress.kubernetes.io/session-cookie-hash: sha1
+      nginx.ingress.kubernetes.io/session-cookie-name: route
+      nginx.ingress.kubernetes.io/ssl-redirect: "true"
+      # CORS is now set in the PingAM and PingIDM configurations
+      nginx.ingress.kubernetes.io/enable-cors: "false"
+      nginx.ingress.kubernetes.io/body-size: "64m"
+      nginx.ingress.kubernetes.io/send-timeout: "600"
+      nginx.ingress.kubernetes.io/proxy-body-size: "64m"
+      nginx.ingress.kubernetes.io/proxy-buffer-size: "16k"
+      nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+      nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
+      # nginx.ingress.kubernetes.io/configuration-snippet: |
+      #   add_header X-ForgeRock-TransactionId $req_id;
+      #   proxy_set_header X-ForgeRock-TransactionId $req_id;
+
+    hosts:
+      - identity-platform.domain.local
+      # - identity-platform-2.local
+    tls:
+      # cert-manager must be deployed in order create/use a certificate issuer
+      issuer:
+        name: # "identity-platform-issuer"
+        kind: Issuer  # ClusterIssuer
+      #  create:
+      #    type: "letsencrypt-prod" # "letsencrypt-staging" # "self-signed"
+      #    email: "address@domain.com"
+      secret:
+        name: # "identity-platform-tls"
+      #  create:
+      #    crt: # base64 encoded string (Ex: base64 -w 0 <domain-file>.pem)
+      #    key: # base64 encoded string (Ex: base64 -w 0 <domain-file>.key)
+
+  service:
+    annotations:
+      traefik.ingress.kubernetes.io/service.sticky.cookie: "true"
+      traefik.ingress.kubernetes.io/service.sticky.cookie.name: "route"
+
+  notes:
+    enabled: true
+  storage:
+    storage_class:
+      name: fast
+      #create:
+      #  # GKE
+      #  provisioner: pd.csi.storage.gke.io
+      #  allowVolumeExpansion: true
+      #  parameters:
+      #    type: pd-ssd
+      #  # EKS
+      #  provisioner: ebs.csi.aws.com
+      #  allowVolumeExpansion: true
+      #  # AKS
+      #  provisioner: disk.csi.azure.com
+      #  allowVolumeExpansion: true
+      #  parameters:
+      #    storageaccounttype: Premium_LRS
+      #    kind: Managed
+    volumeSnapshotClass:
+      name: ds-snapshot-class
+      # create:
+      #   # GKE
+      #   driver: pd.csi.storage.gke.io
+      #   # EKS
+      #   driver: ebs.csi.aws.com
+      #   # AKS
+      #   driver: disk.csi.azure.com
+
+  secrets_enabled: false
+  secrets: {}
+  #  amster:
+  #    annotations:
+  #      secret-generator.v1.mittwald.de/type: ssh-keypair
+  #  am_env_secrets:
+  #    annotations:
+  #      length: 32
+  #      autogenerate:
+  #        - AM_AUTHENTICATION_SHARED_SECRET
+  #        - AM_ENCRYPTION_KEY
+  #        - AM_OIDC_CLIENT_SUBJECT_IDENTIFIER_HASH_SALT
+  #        - AM_PASSWORDS_AMADMIN_CLEAR
+  #        - AM_SELFSERVICE_LEGACY_CONFIRMATION_EMAIL_LINK_SIGNING_KEY
+  #        - AM_SESSION_STATELESS_ENCRYPTION_KEY
+  #        - AM_SESSION_STATELESS_SIGNING_KEY
+  #  amster_env_secrets:
+  #    annotations:
+  #      length: 24
+  #      autogenerate:
+  #        - IDM_PROVISIONING_CLIENT_SECRET
+  #        - IDM_RS_CLIENT_SECRET
+  #  ds_env_secrets:
+  #    annotations:
+  #      length: 32
+  #      autogenerate:
+  #        - AM_STORES_APPLICATION_PASSWORD
+  #        - AM_STORES_CTS_PASSWORD
+  #        - AM_STORES_USER_PASSWORD
+  #  ds_passwords:
+  #    annotations:
+  #      length: 32
+  #      autogenerate:
+  #        - dirmanager.pw
+  #        - monitor.pw
+  #  idm_env_secrets:
+  #    annotations:
+  #      length: 24
+  #      autogenerate:
+  #        - OPENIDM_ADMIN_PASSWORD
+  #  keystore_create:
+  #    annotations:
+  #      length: 24
+  #      autogenerate:
+  #        - KEYSTORE_PASSWORD
+
+  # In order to use user supplied truststore certificates, set
+  # truststore.secret.enabled to "true".
+  # If truststore.secret.create is set to "true", the certificates may be
+  # provided via truststore.secret.certificates.
+  # If truststore.secret.create is set to "false", the certificates may be
+  # provided via a manually created secret.  Example:
+  #   kubectl --namespace identity-platform create secret generic \
+  #       platform-truststore-certificates --from-file=/path/to/my/certificates
+  truststore:
+    secret:
+      enabled: false
+      name: platform-truststore-certificates
+      key: certificates
+      create: false
+      certificates: |
+          # Cert 1
+          -----BEGIN CERTIFICATE-----
+          MIIH0zCCBbugAwIBAgIIXsO3pkN/pOAwDQYJKoZIhvcNAQEFBQAwQjESMBAGA1UE
+          AwwJQUNDVlJBSVoxMRAwDgYDVQQLDAdQS0lBQ0NWMQ0wCwYDVQQKDARBQ0NWMQsw
+                             ... snip ...
+          d3+YJ5oyXSrjhO7FmGYvliAd3djDJ9ew+f7Zfc3Qn48LFFhRny+Lwzgt3uiP1o2H
+          pPVWQxaZLPSkVrQ0uGE3ycJYgBugl6H8WY3pEfbRD0tVNEYqi4Y7
+          -----END CERTIFICATE-----
+          # Cert 2
+          -----BEGIN CERTIFICATE-----
+          MIIFgzCCA2ugAwIBAgIPXZONMGc2yAYdGsdUhGkHMA0GCSqGSIb3DQEBCwUAMDsx
+          CzAJBgNVBAYTAkVTMREwDwYDVQQKDAhGTk1ULVJDTTEZMBcGA1UECwwQQUMgUkFJ
+                             ... snip ...
+          RqEIr9baRRmW1FMdW4R58MD3R++Lj8UGrp1MYp3/RgT408m2ECVAdf4WqslKYIYv
+          uu8wd+RU4riEmViAqhOLUTpPSPaLtrM=
+          -----END CERTIFICATE-----
+
+  tolerations:
+    - key: kubernetes.io/arch
+      operator: Exists
+      effect: NoSchedule
+
+pingone: {}
+  #secretName: pingone-secrets
+
+am:
+  enabled: true
+  replicaCount: 1
+
+  image:
+    repository: us-docker.pkg.dev/forgeops-public/images/am
+    tag: latest
+    pullPolicy: IfNotPresent
+    imagePullSecrets: []
+
+  ingress:
+    enabled: true
+    # Uncomment className and/or annotations to override global platform values
+    # className: "nginx"
+    # annotations: {}
+
+  # Provide extra ENV vars to AM deployment
+  env: []
+    #- name: "AM_ENV_1"
+    #  value: "am_value"
+  envFrom: []
+    #- secretRef:
+    #    name: "my_am_secret"
+
+  resources:
+    limits:
+      memory: 1800Mi
+    requests:
+      cpu: 250m
+      memory: 1800Mi
+
+  livenessProbe:
+    initialDelaySeconds: 30
+    periodSeconds: 30
+    timeoutSeconds: 5
+
+  readinessProbe:
+    initialDelaySeconds: 20
+    periodSeconds: 10
+    timeoutSeconds: 5
+
+  startupProbe:
+    failureThreshold: 40
+    periodSeconds: 10
+
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 100
+    targetCPUUtilizationPercentage: 80
+    # targetMemoryUtilizationPercentage: 80
+
+  pdb:
+    enabled: false
+    minAvailable: 1
+    # maxUnavailable: 1
+
+  nodeSelector: {}
+
+  tolerations: []
+
+  affinity: {}
+
+  podAnnotations: {}
+
+  podLabels:
+    app.kubernetes.io/component: am
+    app: am
+
+  podSecurityContext:
+    fsGroup: 0
+    runAsUser: 11111
+
+  securityContext: {}
+    # capabilities:
+    #   drop:
+    #   - ALL
+    # readOnlyRootFilesystem: true
+    # runAsNonRoot: true
+    # runAsUser: 1000
+
+  service:
+    type: ClusterIP
+    port: 80
+
+  prometheus:
+    servicemonitor:
+      enabled: false
+      path: /am/json/metrics/prometheus
+      port: http
+      secretUser: prometheus
+      secretPassword: prometheus
+
+am_custom:
+  image:
+    repository: busybox
+    tag: musl
+    pullPolicy: IfNotPresent
+
+amster:
+  enabled: true
+  force: false
+  backoffLimit: 6
+  restartPolicy: OnFailure
+  deleteOnSuccess: false
+  ttlSecondsAfterFinished: 43200
+
+  image:
+    repository: us-docker.pkg.dev/forgeops-public/images/amster
+    tag: latest
+    pullPolicy: IfNotPresent
+    imagePullSecrets: []
+
+  resources:
+    limits:
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 512Mi
+
+  readinessProbe:
+    initialDelaySeconds: 1
+
+  nodeSelector: {}
+
+  tolerations: []
+
+  affinity: {}
+
+  podAnnotations: {}
+
+  podLabels:
+    app.kubernetes.io/component: amster
+    app: amster
+
+  podSecurityContext: {}
+    # fsGroup: 2000
+
+  securityContext: {}
+    # capabilities:
+    #   drop:
+    #   - ALL
+    # readOnlyRootFilesystem: true
+    # runAsNonRoot: true
+    # runAsUser: 1000
+
+  env:
+    DURATION: "10"
+
+ds_set_passwords:
+  enabled: true
+  force: false
+  backoffLimit: 6
+  restartPolicy: OnFailure
+  ttlSecondsAfterFinished: 43200
+
+  resources: {}
+    # limits:
+    #   cpu: 100m
+    #   memory: 512Mi
+    # requests:
+    #   cpu: 100m
+    #   memory: 512Mi
+
+  # Defaults to the ds_idrepo image. Uncomment to override; specify all keys.
+  # image:
+  #   repository: us-docker.pkg.dev/forgeops-public/images/ds
+  #   tag: latest
+  #   pullPolicy: Always
+  #   imagePullSecrets: []
+
+  readinessProbe:
+    initialDelaySeconds: 1
+
+  nodeSelector: {}
+
+  tolerations: []
+
+  affinity: {}
+
+  podAnnotations: {}
+
+  podLabels:
+    app.kubernetes.io/component: ldif-importer
+    app: ldif-importer
+
+  podSecurityContext:
+    fsGroup: 0
+    runAsUser: 0
+
+  securityContext: {}
+    # capabilities:
+    #   drop:
+    #   - ALL
+    # readOnlyRootFilesystem: true
+    # runAsNonRoot: true
+    # runAsUser: 1000
+
+idm:
+  enabled: true
+  replicaCount: 1
+
+  image:
+    repository: us-docker.pkg.dev/forgeops-public/images/idm
+    tag: latest
+    pullPolicy: IfNotPresent
+    imagePullSecrets: []
+
+  ingress:
+    enabled: true
+    # Uncomment className and/or annotations to override global platform values
+    # className: "nginx"
+    # annotations: {}
+
+  # Provide extra ENV vars to IDM deployment
+  env: []
+    #- name: "IDM_ENV_1"
+    #  value: "idm_value"
+  envFrom: []
+    #- secretRef:
+    #    name: "my_idm_secret"
+
+  resources:
+    limits:
+      memory: 1280Mi
+    requests:
+      cpu: 250m
+      memory: 1280Mi
+
+  livenessProbe:
+    initialDelaySeconds: 120
+    periodSeconds: 60
+    timeoutSeconds: 5
+
+  readinessProbe:
+    initialDelaySeconds: 30
+    periodSeconds: 30
+    timeoutSeconds: 5
+
+  startupProbe:
+    failureThreshold: 40
+    periodSeconds: 10
+
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 100
+    targetCPUUtilizationPercentage: 80
+    # targetMemoryUtilizationPercentage: 80
+
+  pdb:
+    enabled: false
+    minAvailable: 1
+    # maxUnavailable: 1
+
+  nodeSelector: {}
+
+  tolerations: []
+
+  affinity: {}
+
+  podAnnotations: {}
+
+  podLabels:
+    app.kubernetes.io/component: idm
+    app: idm
+
+  podSecurityContext:
+    runAsUser: 11111
+
+  securityContext: {}
+    # capabilities:
+    #   drop:
+    #   - ALL
+    # readOnlyRootFilesystem: true
+    # runAsNonRoot: true
+    # runAsUser: 1000
+
+  service:
+    type: ClusterIP
+    port: 80
+
+  prometheus:
+    servicemonitor:
+      enabled: false
+      path: /openidm/metrics/prometheus
+      port: http
+      secretUser: prometheus
+      secretPassword: prometheus
+
+idm_custom:
+  image:
+    repository: busybox
+    tag: musl
+    pullPolicy: IfNotPresent
+
+idm_admin_ui:
+  enabled: false
+  replicaCount: 1
+
+  image:
+    repository: us-docker.pkg.dev/forgeops-public/images/idm-admin-ui
+    tag: latest
+    pullPolicy: IfNotPresent
+    imagePullSecrets: []
+
+  ingress:
+    enabled: true
+    # Uncomment className and/or annotations to override global platform values
+    # className: "nginx"
+    # annotations: {}
+
+  # Provide extra ENV vars to idm-admin-ui deployment
+  env: []
+    #- name: "IDM_ENV_1"
+    #  value: "idm_value"
+  envFrom: []
+    #- secretRef:
+    #    name: "my_idm_secret"
+
+  resources:
+    limits:
+      memory: 100Mi
+    requests:
+      cpu: 10m
+      memory: 100Mi
+
+  livenessProbe:
+    initialDelaySeconds: 10
+    periodSeconds: 5
+    timeoutSeconds: 5
+
+  readinessProbe:
+    initialDelaySeconds: 10
+    periodSeconds: 30
+    timeoutSeconds: 5
+
+  startupProbe:
+    failureThreshold: 10
+    periodSeconds: 10
+
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 100
+    targetCPUUtilizationPercentage: 80
+    # targetMemoryUtilizationPercentage: 80
+
+  pdb:
+    enabled: false
+    minAvailable: 1
+    # maxUnavailable: 1
+
+  nodeSelector: {}
+
+  tolerations: []
+
+  affinity: {}
+
+  podAnnotations: {}
+
+  podLabels:
+    app.kubernetes.io/component: idm-admin-ui
+    app: idm-admin-ui
+
+  podSecurityContext:
+    fsGroup: 0
+    runAsUser: 1000
+
+  securityContext:
+    capabilities:
+      drop:
+        - ALL
+    readOnlyRootFilesystem: true
+    runAsNonRoot: true
+    runAsUser: 1000
+
+  service:
+    type: ClusterIP
+    port: 8080
+
+# keystore-create job requries platform.secrets_enabled is true and
+# platform.secrets.keystore_create is uncommented.
+keystore_create:
+  enabled: true
+  backoffLimit: 6
+  restartPolicy: OnFailure
+  deleteOnSuccess: false
+  ttlSecondsAfterFinished: 43200
+  clusterRoleName: identity-platform-keystore-create
+  appendNSToRole: true
+
+  initImage:
+    repository: us-docker.pkg.dev/forgeops-public/images/am
+    tag: latest
+    pullPolicy: IfNotPresent
+
+  image:
+    repository: us-docker.pkg.dev/forgeops-public/images/kubectl
+    tag: 1.36.1
+    pullPolicy: IfNotPresent
+    imagePullSecrets: []
+
+  resources: {}
+    # limits:
+    #   cpu: 100m
+    #   memory: 512Mi
+    # requests:
+    #   cpu: 100m
+    #   memory: 512Mi
+
+  readinessProbe:
+    initialDelaySeconds: 1
+
+  nodeSelector: {}
+
+  tolerations: []
+
+  affinity: {}
+
+  podAnnotations: {}
+
+  podLabels:
+    app.kubernetes.io/component: platform-keystore
+    app: platform-keystore
+
+  podSecurityContext: {}
+    # fsGroup: 2000
+
+  securityContext: {}
+    # capabilities:
+    #   drop:
+    #   - ALL
+    # readOnlyRootFilesystem: true
+    # runAsNonRoot: true
+    # runAsUser: 1000
+
+  config:
+    secret:
+      name: keystore
+      replace: false  # Delete and recreate the keystore if it already exists?
+    storeType: jceks
+    keytoolAliases:
+    # AM keys
+    - name: rsajwtsigningkey
+      cmd: genkeypair
+      # cmd type of genkeypair takes arbritrary args to the keytool command `genkeypair`
+      args: ["-keyalg", "RSA", "-keysize", "2048", "-sigalg", "SHA256WITHRSA", "-validity", "3650", "-dname", "CN=rsajwtsigningkey,O=ForgeRock,L=Bristol,ST=Bristol,C=UK"]
+    - name: es256test
+      cmd: genkeypair
+      args: ["-keyalg", "EC", "-keysize", "256", "-sigalg", "SHA256withECDSA", "-validity", "3650", "-dname", "CN=es256test,O=ForgeRock,L=Bristol,ST=Bristol,C=UK"]
+    - name: es384test
+      cmd: genkeypair
+      args: ["-keyalg", "EC", "-keysize", "384", "-sigalg", "SHA256withECDSA", "-validity", "3650", "-dname", "CN=es384test,O=ForgeRock,L=Bristol,ST=Bristol,C=UK"]
+    - name: es512test
+      cmd: genkeypair
+      args: ["-keyalg", "EC", "-keysize", "521", "-sigalg", "SHA256withECDSA", "-validity", "3650", "-dname", "CN=es512test,O=ForgeRock,L=Bristol,ST=Bristol,C=UK"]
+    - name: selfserviceenctest
+      cmd: genkeypair
+      args: ["-keyalg", "RSA", "-keysize", "2048", "-sigalg", "SHA256WITHRSA", "-validity", "3650", "-dname", "CN=selfserviceenctest,O=ForgeRock,L=Bristol,ST=Bristol,C=UK"]
+    - name: test
+      cmd: genkeypair
+      args: ["-keyalg", "RSA", "-keysize", "2048", "-sigalg", "SHA256WITHRSA", "-validity", "3650", "-dname", "CN=test,O=ForgeRock,L=Bristol,ST=Bristol,C=UK"]
+    - name: hmacsigningtest
+      cmd: genseckey
+      args: ["-keyalg", "HMacSHA512", "-keysize", "512"]
+    - name: selfservicesigntest
+      cmd: genseckey
+      args: ["-keyalg", "HMacSHA512", "-keysize", "256"]
+    - name: directenctest
+      cmd: genseckey
+      args: ["-keyalg", "aes", "-keysize", "256"]
+    # IDM keys
+    - name: openidm-sym-default
+      cmd: genseckey
+      args: ["-keyalg", "aes", "-keysize", "128"]
+    - name: openidm-jwtsessionhmac-key
+      cmd: genseckey
+      args: ["-keyalg", "HmacSHA256", "-keysize", "256"]
+    - name: openidm-selfservice-key
+      cmd: genseckey
+      args: ["-keyalg", "aes", "-keysize", "128"]
+    - name: server-cert
+      cmd: genkeypair
+      args: ["-keyalg", "RSA", "-keysize", "2048", "-sigalg", "SHA256WITHRSA", "-validity", "3650", "-dname", "CN=server-cert,O=ForgeRock,L=Bristol,ST=Bristol,C=UK"]
+    - name: selfservice
+      cmd: genkeypair
+      args: ["-keyalg", "RSA", "-keysize", "2048", "-sigalg", "SHA256WITHRSA", "-validity", "3650", "-dname", "CN=selfservice,O=ForgeRock,L=Bristol,ST=Bristol,C=UK"]
+    - name: openidm-localhost
+      cmd: genkeypair
+      args: ["-keyalg", "RSA", "-keysize", "2048", "-sigalg", "SHA256WITHRSA", "-validity", "3650", "-dname", "CN=openidm-localhost,O=ForgeRock,L=Bristol,ST=Bristol,C=UK"]
+
+admin_ui:
+  enabled: true
+  replicaCount: 1
+
+  image:
+    repository: us-docker.pkg.dev/forgeops-public/images/admin-ui
+    tag: latest
+    pullPolicy: IfNotPresent
+    imagePullSecrets: []
+
+  ingress:
+    enabled: true
+    # Uncomment className and/or annotations to override global platform values
+    # className: "nginx"
+    # annotations: {}
+
+  resources:
+    limits:
+      memory: 100Mi
+    requests:
+      cpu: 10m
+      memory: 100Mi
+
+  startupProbe:
+    initialDelaySeconds: 10
+
+  livenessProbe:
+    periodSeconds: 10
+    timeoutSeconds: 1
+
+  readinessProbe:
+    periodSeconds: 10
+    timeoutSeconds: 1
+
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 100
+    targetCPUUtilizationPercentage: 80
+    # targetMemoryUtilizationPercentage: 80
+
+  pdb:
+    enabled: false
+    minAvailable: 1
+    # maxUnavailable: 1
+
+  nodeSelector: {}
+
+  tolerations: []
+
+  affinity: {}
+
+  podAnnotations: {}
+
+  podLabels:
+    app.kubernetes.io/component: admin-ui
+    app: admin-ui
+
+  podSecurityContext: {}
+    # fsGroup: 2000
+
+  securityContext: {}
+    # capabilities:
+    #   drop:
+    #   - ALL
+    # readOnlyRootFilesystem: true
+    # runAsNonRoot: true
+    # runAsUser: 1000
+
+  service:
+    type: ClusterIP
+    port: 8080
+
+end_user_ui:
+  enabled: true
+  replicaCount: 1
+
+  image:
+    repository: us-docker.pkg.dev/forgeops-public/images/end-user-ui
+    tag: latest
+    pullPolicy: IfNotPresent
+    imagePullSecrets: []
+
+  ingress:
+    enabled: true
+    # Uncomment className and/or annotations to override global platform values
+    # className: "nginx"
+    # annotations: {}
+
+  resources:
+    limits:
+      memory: 100Mi
+    requests:
+      cpu: 10m
+      memory: 100Mi
+
+  startupProbe:
+    initialDelaySeconds: 10
+
+  livenessProbe:
+    periodSeconds: 10
+    timeoutSeconds: 1
+
+  readinessProbe:
+    periodSeconds: 10
+    timeoutSeconds: 1
+
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 100
+    targetCPUUtilizationPercentage: 80
+    # targetMemoryUtilizationPercentage: 80
+
+  pdb:
+    enabled: false
+    minAvailable: 1
+    # maxUnavailable: 1
+
+  nodeSelector: {}
+
+  tolerations: []
+
+  affinity: {}
+
+  podAnnotations: {}
+
+  podLabels:
+    app.kubernetes.io/component: end-user-ui
+    app: end-user-ui
+
+  podSecurityContext: {}
+    # fsGroup: 2000
+
+  securityContext: {}
+    # capabilities:
+    #   drop:
+    #   - ALL
+    # readOnlyRootFilesystem: true
+    # runAsNonRoot: true
+    # runAsUser: 1000
+
+  service:
+    type: ClusterIP
+    port: 8080
+
+login_ui:
+  enabled: true
+  replicaCount: 1
+
+  image:
+    repository: us-docker.pkg.dev/forgeops-public/images/login-ui
+    tag: latest
+    pullPolicy: IfNotPresent
+    imagePullSecrets: []
+
+  ingress:
+    enabled: true
+    # Uncomment className and/or annotations to override global platform values
+    # className: "nginx"
+    # annotations: {}
+
+  resources:
+    limits:
+      memory: 100Mi
+    requests:
+      cpu: 10m
+      memory: 100Mi
+
+  startupProbe:
+    initialDelaySeconds: 10
+
+  livenessProbe:
+    periodSeconds: 10
+    timeoutSeconds: 1
+
+  readinessProbe:
+    periodSeconds: 10
+    timeoutSeconds: 1
+
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 100
+    targetCPUUtilizationPercentage: 80
+    # targetMemoryUtilizationPercentage: 80
+
+  pdb:
+    enabled: false
+    minAvailable: 1
+    # maxUnavailable: 1
+
+  nodeSelector: {}
+
+  tolerations: []
+
+  affinity: {}
+
+  podAnnotations: {}
+
+  podLabels:
+    app.kubernetes.io/component: login-ui
+    app: login-ui
+
+  podSecurityContext: {}
+    # fsGroup: 2000
+
+  securityContext: {}
+    # capabilities:
+    #   drop:
+    #   - ALL
+    # readOnlyRootFilesystem: true
+    # runAsNonRoot: true
+    # runAsUser: 1000
+
+  service:
+    type: ClusterIP
+    port: 8080
+
+# Common values for doing PingDS snapshots
+ds_snapshot:
+  class: ds-snapshot-class
+  configmapCreate: true
+  configmapOnly: false
+  generate: false
+  podSecurityContext: {}
+  rbacCreate: true
+  rbacOnly: false
+  serviceAccountName: ds-snapshot
+  clusterRoleName: ds-snapshot
+  appendNSToRole: true
+
+  image:
+    repository: us-docker.pkg.dev/forgeops-public/images/kubectl
+    tag: 1.36.1
+    pullPolicy: IfNotPresent
+    imagePullSecrets: []
+
+ds_restore:
+    # Restore a backup taken by the dsbackup tool
+  autoRestore: false
+  # backupLocation is either:
+  #   Pod:         /local/path
+  #   Cloud Storage: s3://bucket/path | az://container/path | gs://bucket/path
+  backupLocation: ""
+  # Name of hosts running the backups (e.g. ds-idrepo-2,ds-cts-2)
+  backupHosts: ""
+  # Set the Disaster Recover to unique value when restoring from a previous backup
+  # This value must be changed in order to trigger the disaster recovery process on pod restart
+  disasterRecoveryId: "initial-restore"
+
+ds_idrepo:
+  enabled: true
+  replicaCount: 1
+
+  image:
+    repository: us-docker.pkg.dev/forgeops-public/images/ds
+    tag: latest
+    pullPolicy: IfNotPresent
+    imagePullSecrets: []
+
+  env: []
+    #- name: "IDREPO_ENV_1"
+    #  value: "idrepo_value"
+  envFrom: []
+    #- secretRef:
+    #    name: "my_idrepo_secret"
+
+  resources:
+    limits:
+      memory: 1366Mi
+    requests:
+      cpu: 500m
+      memory: 1366Mi
+
+  startupProbe:
+    failureThreshold: 720
+    initialDelaySeconds: 30
+
+  volumeClaimSpec:
+    storageClassName: fast
+    accessModes:
+      - ReadWriteOnce
+    resources:
+      requests:
+        storage: 10Gi
+
+  nodeSelector: {}
+
+  # Create a toleration that allows this pod to be scheduled on a tainted node
+  # This is used to drive directory instances to dedicated nodes for performance.
+  # If a node is not tainted, this has no impact.
+  tolerations:
+    - effect: NoSchedule
+      key: key
+      operator: Equal
+      value: directory
+
+  topologySpreadConstraints:
+    - labelSelector:
+        matchLabels:
+          app.kubernetes.io/component: ds-idrepo
+      maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: ScheduleAnyway
+    - labelSelector:
+        matchLabels:
+          app.kubernetes.io/component: ds-idrepo
+      maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: ScheduleAnyway
+
+  affinity:
+    # Schedules PingDS Pods to a node with the label "ds" if it exists
+    nodeAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          preference:
+            matchExpressions:
+              - key: ds
+                operator: Exists
+
+  pdb:
+    enabled: false
+    minAvailable: 1
+    # maxUnavailable: 1
+
+  podAnnotations: {}
+
+  podLabels:
+    app.kubernetes.io/component: ds-idrepo
+    app: ds-idrepo
+
+  podSecurityContext:
+    fsGroup: 0
+    runAsUser: 11111
+
+  securityContext: {}
+    # capabilities:
+    #   drop:
+    #   - ALL
+    # readOnlyRootFilesystem: true
+    # runAsNonRoot: true
+    # runAsUser: 1000
+
+  service:
+    type: ClusterIP
+    port: 8080
+
+  prometheus:
+    servicemonitor:
+      enabled: false
+      path: /metrics/prometheus/0.0.4
+      port: http
+      secretUser: monitor
+      secretPassword: password
+
+  snapshot:
+    enabled: false
+    name: ds-idrepo-snapshot
+    pvcName: data-ds-idrepo-0
+    failedJobsHistoryLimit: 3
+
+    # Daily snaphot at midnight
+    schedule: "0 0 * * *"
+
+    # Purge snaps older than 3 days
+    purgeDelay: "-3 day"
+
+    # Set Env Vars in snapshot pod
+    env: []
+    # env:
+    #   - DEBUG: 'true' # Turn on debugging in snapshot.sh
+
+ds_cts:
+  enabled: true
+  replicaCount: 1
+
+  image:
+    repository: us-docker.pkg.dev/forgeops-public/images/ds
+    tag: latest
+    pullPolicy: IfNotPresent
+    imagePullSecrets: []
+
+  env: []
+    #- name: "CTS_ENV_1"
+    #  value: "cts_value"
+  envFrom: []
+    #- secretRef:
+    #    name: "my_cts_secret"
+
+  resources:
+    limits:
+      memory: 1366Mi
+    requests:
+      cpu: 500m
+      memory: 1366Mi
+
+  startupProbe:
+    failureThreshold: 720
+    initialDelaySeconds: 30
+
+  volumeClaimSpec:
+    storageClassName: fast
+    accessModes:
+      - ReadWriteOnce
+    resources:
+      requests:
+        storage: 10Gi
+
+  nodeSelector: {}
+
+  # Create a toleration that allows this pod to be scheduled on a tainted node
+  # This is used to drive directory instances to dedicated nodes for performance.
+  # If a node is not tainted, this has no impact.
+  tolerations:
+    - effect: NoSchedule
+      key: key
+      operator: Equal
+      value: directory
+
+  topologySpreadConstraints:
+    - labelSelector:
+        matchLabels:
+          app.kubernetes.io/component: ds-cts
+      maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: ScheduleAnyway
+    - labelSelector:
+        matchLabels:
+          app.kubernetes.io/component: ds-cts
+      maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: ScheduleAnyway
+
+  affinity:
+    # Schedules PingDS Pods to a node with the label "ds" if it exists
+    nodeAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          preference:
+            matchExpressions:
+              - key: ds
+                operator: Exists
+
+  pdb:
+    enabled: false
+    minAvailable: 1
+    # maxUnavailable: 1
+
+  podAnnotations: {}
+
+  podLabels:
+    app.kubernetes.io/component: ds-cts
+    app: ds-cts
+
+  podSecurityContext:
+    fsGroup: 0
+    runAsUser: 11111
+
+  securityContext: {}
+    # capabilities:
+    #   drop:
+    #   - ALL
+    # readOnlyRootFilesystem: true
+    # runAsNonRoot: true
+    # runAsUser: 1000
+
+  service:
+    type: ClusterIP
+    port: 8080
+
+  prometheus:
+    servicemonitor:
+      enabled: false
+      path: /metrics/prometheus/0.0.4
+      port: http
+      secretUser: monitor
+      secretPassword: password
+
+  snapshot:
+    enabled: false
+    name: ds-cts-snapshot
+    pvcName: data-ds-cts-0
+    failedJobsHistoryLimit: 3
+
+    # Daily snaphot at midnight
+    schedule: "0 0 * * *"
+
+    # Purge snaps older than 3 days
+    purgeDelay: "-3 day"
+
+    # Set Env Vars in snapshot pod
+    env: []
+    # env:
+    #   - DEBUG: 'true' # Turn on debugging in snapshot.sh
+    #
+ssh_keygen:
+  enabled: false
+  bits: 4096
+  backoffLimit: 6
+  restartPolicy: OnFailure
+  ttlSecondsAfterFinished: 7200
+  clusterRoleName: identity-platform-ssh-keygen
+  appendNSToRole: true
+
+  initImage:
+    # dockette/ssh:latest as of 2026-08-24
+    repository: dockette/ssh
+    tag: sha256:d55024e964adefe2793426ab26626a637cd2a531b9cd6898d06b1190df6399e6
+    pullPolicy: IfNotPresent
+    imagePullSecrets: []
+  image:
+    repository: us-docker.pkg.dev/forgeops-public/images/kubectl
+    tag: 1.36.1
+    pullPolicy: IfNotPresent
+    imagePullSecrets: []
+
+  resources: {}
+    # limits:
+    #   cpu: 100m
+    #   memory: 512Mi
+    # requests:
+    #   cpu: 100m
+    #   memory: 512Mi
+
+  readinessProbe:
+    initialDelaySeconds: 1
+
+  nodeSelector: {}
+
+  tolerations: []
+
+  affinity: {}
+
+  podAnnotations: {}
+
+  podLabels:
+    app.kubernetes.io/component: platform-ssh-key
+    app: platform-ssh-key
+
+  podSecurityContext: {}
+    # fsGroup: 2000
+
+  securityContext: {}
+    # capabilities:
+    #   drop:
+    #   - ALL
+    # readOnlyRootFilesystem: true
+    # runAsNonRoot: true
+    # runAsUser: 1000
+
+  config:
+    secret:
+      name: amster
+      replace: false  # Delete and recreate the keystore if it already exists?

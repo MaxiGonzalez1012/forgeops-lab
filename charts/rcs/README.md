@@ -1,0 +1,144 @@
+CHART_VERSION=0.3.0
+
+# Helm chart for RCS
+
+## Preparation
+
+### Choose server or client mode
+
+RCS can run in either server or client mode. By default, the chart is
+configured for server mode. In server mode IDM connects to RCS, and in client
+mode RCS connects to IDM.
+
+### Server mode
+
+#### Create a values.yaml
+
+By default the chart will deploy RCS in server mode without you needing to
+provide a custom values.yaml. However, you may want/need to update some values.
+
+If you need/want redundancy for RCS, you can set replicaCount.
+
+`replicaCount: 2`
+
+If you need/want to restrict network traffic to certain IP ranges, you can set
+`remoteIps`.
+
+```
+  remoteIps:
+    - "1.2.3.4/32"
+    - "5.6.7.0/24"
+```
+
+Set the logging level:
+
+```
+  logLevels:
+    root: "DEBUG"
+```
+
+#### Create the rcs-key secret
+
+You need a shared secret that RCS and IDM both know. In this example, the pwgen
+tool is used to generate a password, but you can create one any way you like.
+The RCS software expects this shared secret to be encoded with sha1sum and
+base64.
+
+```
+# Create a password, note this password to be entered into IDM
+export RCS_KEY_PW=$(pwgen 24)
+# sha1sum the password
+export RCS_KEY_SHA=$(echo $RCS_KEY_PW | sha1sum --quiet)
+# base64 encode the SHA
+export RCS_KEY_B64=$(echo $RCS_KEY_SHA | base64)
+kubectl create secret generic rcs-key --from-literal=RCS_KEY=$RCS_KEY_B64
+# Confirm secret contents
+export RCS_KEY_SHA_FROM_SECRET=$(kubectl get secret rcs-key -o json | jq '.data.RCS_KEY' | tr -d '"' | base64 -d | base64 -d)
+if [ "$RCS_KEY_SHA" == "$RCS_KEY_SHA_FROM_SECRET" ] ; then echo "They match" ; else echo "They don't match" ; fi
+# Note the password in $RCS_KEY_PW, then remove the vars
+unset RCS_KEY_PW RCS_KEY_SHA RCS_KEY_B64 RCS_KEY_SHA_FROM_SECRET
+```
+
+#### Create rcs-certs secret if needed
+
+This is required for client mode, see the section on creating this secret to
+create it if you need it.
+
+### Client mode
+
+Currently, client mode is primarily for AIC clients who want to connect a
+ForgeOps deployment to their AIC tenant. It is not currently possible to
+connect to a ForgeOps deployment in client mode. That will be possible in the
+future.
+
+#### Create a values.yaml
+
+Create a values.yaml for your configuration, and update the values according to
+the environment. See the defaults/examples in `charts/rcs/values.yaml`.
+
+The WSS URL and token for the IDM endpoint:
+```
+custom_properties:
+  - "connectorserver.url=wss://auth.example.com/openicf"
+  - "connectorserver.tokenEndpoint=https://auth.example.com/am/oauth2/realms/root/realms/alpha/access_token"
+```
+
+The IP address for the IDM service (e.g. Identity Cloud tenant):
+`remoteIps:
+  - "1.2.3.4/32"`
+
+The number of pods (replicas) you want to run:
+`replicaCount: 2`
+
+Adjust according to log level requirements - e.g. `DEBUG` for test systems:
+```
+logLevels:
+  root: "DEBUG"
+```
+
+#### Create secrets
+
+The chart relies on a few secrets to connect to your environment.
+
+Certificates to be installed in the RCS trust store - e.g. issuing CA for LDAPS
+server certificates to enable connector trust. Any unique name may be used for
+each certificate.
+
+You need the CA cert from the `ds-ssl-keypair` secret in your ForgeOps
+deployment. This is so RCS can connect directly to DS which is the most
+efficient method.
+
+```
+> mkdir /tmp/rcs-certs
+> kubectl get secret ds-ssl-keypair -o json | jq '.data["ca.crt"]' | tr -d '"' | base64 -d > /tmp/rcs-certs/ds-ca.crt
+```
+
+You can add any other certs you may need to that directory, and create the
+secret like this:
+
+`kubectl create secret generic rcs-certs --from-file=/tmp/rcs-certs`
+
+You also need to create a secret to hold the clientId and clientSecret needed to
+connect to your PIP deployment. In this example, we are using the default
+clientId in AIC called RCSClient. This should be whatever you called the oauth
+client in your deployment.
+
+- clientId - The OAuth2 client ID for acquiring an access token
+- clientSecret - The OAuth2 client secret for the above client ID
+-
+`kubectl create secret generic rcs-client-auth --from-literal=clientId=RCSClient --from-literal='clientSecret=Testing123!'`
+
+## Install
+
+Install the RCS Helm chart in the current namespace
+
+`helm install rcs rcs --repo https://ForgeRock.github.io/forgeops --version 0.3.0 -f my-values.yaml`
+
+There should now be running RCS pod(s) - e.g. with 2 replicas:
+
+```
+% kubectl get pods
+NAME    READY   STATUS    RESTARTS   AGE
+rcs-0   1/1     Running   0          50s
+rcs-1   1/1     Running   0          50s
+```

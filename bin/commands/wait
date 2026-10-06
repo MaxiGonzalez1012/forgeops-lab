@@ -1,0 +1,234 @@
+#!/usr/bin/env bash
+
+set -e
+
+# Grab our starting dir
+start_dir=$(pwd)
+# Figure out the dir we live in
+SCRIPT_DIR=$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )
+# Bring in our standard functions
+source $SCRIPT_DIR/../../lib/shell/stdlib.sh
+# Bring in common.sh
+source $SCRIPT_DIR/common.sh
+# Go back to where we started
+cd "${start_dir}"
+
+usage() {
+  local usage_msg=$(cat<<EOM
+usage: $PROG [OPTIONS] [<component> <component> ...]
+
+Wait for platform components to be ready
+
+OPTIONS:
+  -h|--help                   : display usage and exit
+  --debug                     : turn on debugging
+  --dryrun                    : do a dry run
+  -v|--verbose                : be verbose
+  -n|--namespace <ns>         : k8s namespace to wait for components
+  -t|--timeout <n>            : set the max time in seconds to wait for (default: 600)
+
+Valid components:
+  ${COMPONENTS_VALID[@]}
+
+Examples:
+  Normal operation:
+  $PROG
+
+  Do a dryrun:
+  $PROG --dryrun
+
+EOM
+)
+
+  usageStd $1 "$usage_msg" "$2"
+}
+
+timeoutExit() {
+  echo "Timeout (${TIMEOUT}s) exceeded."
+  exit 1
+}
+
+waitForResource() {
+  message "Starting waitForResource()" "debug"
+
+  local condition=$1
+  local resource=$2
+
+  echo "Waiting for ${resource} to be ${condition}."
+
+  if waitResourceExists "$resource" ; then
+    kube wait --for=condition=$condition --timeout="${TIMEOUT}s" $resource
+  else
+    echo "ERROR: $resource not found. Skipping."
+  fi
+}
+
+waitForSecret() {
+  message "Starting waitForSecret()" "debug"
+
+  local secret=$1
+  local start_time=$(date +%s)
+  local now=$(date +%s)
+
+  echo -n "Waiting for secret $secret to exist..."
+  while [ $(($now - $start_time)) -le $TIMEOUT ] ; do
+    if kubeExists "secret $secret" ; then
+      echo done
+      return 0
+    else
+      echo -n '.'
+      sleep 1
+    fi
+    now=$(date +%s)
+  done
+
+  timeoutExit
+}
+
+waitResourceExists() {
+  message "Starting waitResourceExists()" "debug"
+
+  local resource=$1
+  local start_time=$(date +%s)
+  local now=$(date +%s)
+
+  if [ "$DRYRUN" = true ] ; then
+    return
+  fi
+
+  while [ $(($now - $start_time)) -le $TIMEOUT ] ; do
+    if kubeExists $resource ; then
+      return 0
+    fi
+    now=$(date +%s)
+  done
+
+  timeoutExit
+}
+
+# Returns the name of the most recently created amster Job, polling until one exists.
+# Progress messages go to stderr so stdout carries only the job name for capture.
+getLatestAmsterJob() {
+  local start_time=$(date +%s)
+  local now=$(date +%s)
+  local job_name
+
+  echo -n "Waiting for amster Job to exist..." >&2
+  while [ $(($now - $start_time)) -le $TIMEOUT ] ; do
+    job_name=$($K_GET jobs -l app.kubernetes.io/component=amster \
+      --sort-by=.metadata.creationTimestamp \
+      -o jsonpath='{.items[-1].metadata.name}' 2>/dev/null)
+    if [ -n "$job_name" ] ; then
+      echo " $job_name" >&2
+      echo "$job_name"
+      return 0
+    fi
+    echo -n '.' >&2
+    sleep 1
+    now=$(date +%s)
+  done
+
+  timeoutExit
+}
+
+waitForRollout() {
+  local resource=$1
+  echo "Waiting for ${resource} rollout to complete."
+  if waitResourceExists "$resource" ; then
+    kube rollout status --watch "${resource}" --timeout="${TIMEOUT}s"
+  fi
+}
+
+# Setup valid components now so they get presented in the usage
+COMPONENTS_VALID=${COMPONENTS_WAIT[@]}
+
+# We don't require an env name
+ENV_REQUIRED=false
+
+# Code in common.sh
+processArgs $*
+checkComponents
+
+if containsElements "${COMPONENTS_ALL[*]}" "${COMPONENTS[*]}" ; then
+  COMPONENTS=${COMPONENTS_PLATFORM[@]}
+fi
+
+if containsElement 'apps' "${COMPONENTS[*]}" ; then
+  expandComponent 'apps' "${COMPONENTS_APPS[*]}"
+fi
+
+if containsElement 'ds' "${COMPONENTS[*]}" ; then
+  expandComponent 'ds' "${COMPONENTS_DS[*]}"
+  shiftComponent 'ds-cts' 'first'
+  shiftComponent 'ds-idrepo' 'first'
+fi
+
+if containsElement 'ui' "${COMPONENTS[*]}" ; then
+  expandComponent 'ui' "${COMPONENTS_UI[*]}"
+fi
+
+SECRET_NAMES=('am-env-secrets' 'idm-env-secrets' 'ds-passwords' 'ds-env-secrets')
+TIMEOUT=${TIMEOUT:-60}
+
+kubeInit
+
+message "COMPONENTS=${COMPONENTS[*]}" "debug"
+for c in ${COMPONENTS[@]} ; do
+  message "c=$c" "debug"
+  case $c in
+    admin-ui)
+      waitForRollout "deployment/admin-ui"
+      ;;
+
+    am)
+      waitForRollout "deployment/am"
+      ;;
+
+    amster)
+      amster_job=$(getLatestAmsterJob)
+      waitForResource 'complete' "job/${amster_job}"
+      ;;
+
+    apps)
+      amster_job=$(getLatestAmsterJob)
+      waitForRollout "deployment/am"
+      waitForResource 'complete' "job/${amster_job}"
+      waitForRollout "deployment/idm"
+      ;;
+
+    ds-cts)
+      waitForRollout "statefulset/ds-cts"
+      ;;
+
+    ds-idrepo)
+      waitForRollout "statefulset/ds-idrepo"
+      ;;
+
+    end-user-ui)
+      waitForRollout "deployment/end-user-ui"
+      ;;
+
+    idm)
+      waitForRollout "deployment/idm"
+      ;;
+
+    ig)
+      waitForRollout "deployment/ig"
+      ;;
+
+    login-ui)
+      waitForRollout "deployment/login-ui"
+      ;;
+
+    secrets)
+      for s in ${SECRET_NAMES[@]} ; do
+        message "s=$s" "debug"
+        waitForSecret $s
+      done
+      ;;
+
+    *)
+      usage 1 "Invalid wait target: $c"
+      ;;
+  esac
+done
