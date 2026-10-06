@@ -1,0 +1,6 @@
+- op: replace
+  path: /roleRef/name
+  value: identity-platform-keystore-create:forgeops
+- op: replace
+  path: /subjects/0/namespace
+  value: forgeops

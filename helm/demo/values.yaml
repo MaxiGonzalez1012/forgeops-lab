@@ -1,0 +1,129 @@
+platform:
+  secrets: {}
+  ingress:
+    hosts:
+    - forgeops26.example.com
+    tls:
+      issuer:
+        kind: ClusterIssuer
+        name: default-issuer
+  disable_secret_agent_config: false
+  secrets_enabled: false
+  configMap:
+    enabled: true
+    data:
+      AM_OAUTH2_AIAGENTS_ENABLED: 'true'
+      ENABLE_AI_AGENTS: 'true'
+am:
+  replicaCount: 1
+  podSecurityContext:
+    runAsUser: 11111
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+      - All
+    readOnlyRootFilesystem: true
+    runAsNonRoot: true
+  image:
+    repository: us-docker.pkg.dev/forgeops-public/images/am
+    tag: 8.1.1-202609140519
+ds_cts:
+  replicaCount: 1
+  podSecurityContext:
+    runAsUser: 11111
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+      - All
+    readOnlyRootFilesystem: true
+    runAsNonRoot: true
+    runAsUser: 11111
+  image:
+    repository: us-docker.pkg.dev/forgeops-public/images/ds
+    tag: 8.1.1-202609210536
+idm:
+  replicaCount: 1
+  podSecurityContext:
+    runAsUser: 11111
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+      - All
+    readOnlyRootFilesystem: true
+    runAsNonRoot: true
+  image:
+    repository: us-docker.pkg.dev/forgeops-public/images/idm
+    tag: 8.1.1-202610060530
+ds_idrepo:
+  replicaCount: 1
+  podSecurityContext:
+    runAsUser: 11111
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+      - All
+    readOnlyRootFilesystem: true
+    runAsNonRoot: true
+    runAsUser: 11111
+  image:
+    repository: us-docker.pkg.dev/forgeops-public/images/ds
+    tag: 8.1.1-202609210536
+ig:
+  replicaCount: 1
+ssh_keygen:
+  enabled: false
+admin_ui:
+  podSecurityContext:
+    runAsUser: 101
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+      - All
+    readOnlyRootFilesystem: true
+    runAsNonRoot: true
+  image:
+    repository: us-docker.pkg.dev/forgeops-public/images/admin-ui
+    tag: 8.1.1
+login_ui:
+  podSecurityContext:
+    runAsUser: 101
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+      - All
+    readOnlyRootFilesystem: true
+    runAsNonRoot: true
+  image:
+    repository: us-docker.pkg.dev/forgeops-public/images/login-ui
+    tag: 8.1.1
+end_user_ui:
+  podSecurityContext:
+    runAsUser: 101
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+      - All
+    readOnlyRootFilesystem: true
+    runAsNonRoot: true
+  image:
+    repository: us-docker.pkg.dev/forgeops-public/images/end-user-ui
+    tag: 8.1.1
+idm_admin_ui:
+  image:
+    repository: us-docker.pkg.dev/forgeops-public/images/idm-admin-ui
+    tag: 8.1.1-202609091928
+amster:
+  image:
+    repository: us-docker.pkg.dev/forgeops-public/images/amster
+    tag: 8.1.1-202609140529
+am_config_upgrader:
+  image:
+    repository: us-docker.pkg.dev/forgeops-public/images/am-config-upgrader
+    tag: 8.1.1-202609140524
