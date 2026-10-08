@@ -26,8 +26,8 @@ am:
     readOnlyRootFilesystem: true
     runAsNonRoot: true
   image:
-    repository: us-docker.pkg.dev/forgeops-public/images/am
-    tag: 8.1.1-202609140519
+    repository: am
+    tag: node-v2
 ds_cts:
   replicaCount: 1
   podSecurityContext:
@@ -42,7 +42,7 @@ ds_cts:
     runAsUser: 11111
   image:
     repository: us-docker.pkg.dev/forgeops-public/images/ds
-    tag: 8.1.1-202609210536
+    tag: 8.1.2-202610060532
 idm:
   replicaCount: 1
   podSecurityContext:
@@ -71,7 +71,7 @@ ds_idrepo:
     runAsUser: 11111
   image:
     repository: us-docker.pkg.dev/forgeops-public/images/ds
-    tag: 8.1.1-202609210536
+    tag: 8.1.2-202610060532
 ig:
   replicaCount: 1
 ssh_keygen:

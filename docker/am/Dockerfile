@@ -27,6 +27,7 @@ RUN if [ -f /home/forgerock/openam/config/services/realm/root/iplanetamauthservi
 
 ENV CATALINA_OPTS="${CATALINA_OPTS} -Dlogback.configurationFile=/home/forgerock/logging/logback.xml"
 
+COPY --chown=forgerock:root custom-nodes/*.jar /usr/local/tomcat/webapps/am/WEB-INF/lib/
 WORKDIR /home/forgerock
 
 # If you want to debug PingAM uncomment these lines:

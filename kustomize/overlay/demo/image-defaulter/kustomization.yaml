@@ -5,8 +5,8 @@ images:
   newName: us-docker.pkg.dev/forgeops-public/images/admin-ui
   newTag: 8.1.1
 - name: am
-  newName: us-docker.pkg.dev/forgeops-public/images/am
-  newTag: 8.1.1-202609140519
+  newName: am
+  newTag: node-v2
 - name: am-config-upgrader
   newName: us-docker.pkg.dev/forgeops-public/images/am-config-upgrader
   newTag: 8.1.1-202609140524
@@ -18,7 +18,7 @@ images:
   newTag: 8.1.1-202609140529
 - name: ds
   newName: us-docker.pkg.dev/forgeops-public/images/ds
-  newTag: 8.1.1-202609210536
+  newTag: 8.1.2-202610060532
 - name: end-user-ui
   newName: us-docker.pkg.dev/forgeops-public/images/end-user-ui
   newTag: 8.1.1
